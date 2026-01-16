@@ -1,5 +1,6 @@
 import { TelegramClient, Api } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
+import bigInt from "big-integer";
 import * as fs from "fs";
 // @ts-ignore
 import qrcode from "qrcode-terminal";
@@ -207,7 +208,30 @@ export async function resolveChannels(
   for (const channelName of channelNames) {
     log("DEBUG", `Attempting to resolve channel: ${channelName}`);
     try {
-      const entity = (await client.getEntity(channelName)) as Api.Channel;
+      let entity: Api.Channel;
+
+      // Check if the channel identifier is a numeric ID (with optional -100 prefix)
+      const numericMatch = channelName.match(/^-?(\d+)$/);
+      if (numericMatch) {
+        let channelIdStr = channelName;
+
+        // Handle the -100 prefix that Telegram uses for channel IDs in some contexts
+        // If ID is negative and starts with -100, extract the actual channel ID
+        if (channelIdStr.startsWith("-100")) {
+          channelIdStr = channelIdStr.slice(4);
+        } else if (channelIdStr.startsWith("-")) {
+          channelIdStr = channelIdStr.slice(1);
+        }
+
+        log("DEBUG", `Resolving as numeric channel ID: ${channelIdStr}`);
+        entity = (await client.getEntity(
+          new Api.PeerChannel({ channelId: bigInt(channelIdStr) })
+        )) as Api.Channel;
+      } else {
+        // Treat as username
+        entity = (await client.getEntity(channelName)) as Api.Channel;
+      }
+
       channelEntities.set(channelName, entity);
       log("INFO", `Channel resolved: ${channelName}`, {
         title: entity.title,
