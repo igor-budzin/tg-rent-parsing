@@ -1,10 +1,8 @@
-import { TelegramClient, Api } from "telegram";
-import { BOT_TOKEN, TELEGRAM_USER_ID } from "../config.js";
+import { BOT_TOKEN, TELEGRAM_USER_IDS } from "../config.js";
 import { log } from "../utils/logger.js";
-import { NotifyEntity } from "../types/index.js";
 
 export function isUsingBot(): boolean {
-  return !!(BOT_TOKEN && TELEGRAM_USER_ID);
+  return !!(BOT_TOKEN && TELEGRAM_USER_IDS.length > 0);
 }
 
 function convertMarkdownToHtml(text: string): string {
@@ -13,16 +11,15 @@ function convertMarkdownToHtml(text: string): string {
     .replace(/_([^_]+)_/g, "<i>$1</i>");
 }
 
-async function sendViaBotApi(message: string): Promise<boolean> {
+async function sendMessageToUser(userId: string, htmlMessage: string): Promise<boolean> {
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    const htmlMessage = convertMarkdownToHtml(message);
 
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id: TELEGRAM_USER_ID,
+        chat_id: userId,
         text: htmlMessage,
         parse_mode: "HTML",
       }),
@@ -32,62 +29,48 @@ async function sendViaBotApi(message: string): Promise<boolean> {
 
     if (!response.ok) {
       log("ERROR", "Bot API returned error", {
+        userId,
         status: response.status,
         error: responseData,
         hint: responseData?.description?.includes("chat not found")
-          ? "You need to start a chat with your bot first! Send /start to your bot."
+          ? "User needs to start a chat with your bot first! Send /start to your bot."
           : undefined,
       });
       return false;
     }
 
-    log("INFO", "Notification sent via bot successfully");
     return true;
   } catch (error) {
-    log("ERROR", "Failed to send bot notification", { error });
+    log("ERROR", "Failed to send bot notification", { userId, error });
     return false;
   }
 }
 
-async function sendViaClient(
-  client: TelegramClient,
-  notifyEntity: NotifyEntity,
-  message: string
-): Promise<boolean> {
-  try {
-    await client.sendMessage(notifyEntity, {
-      message,
-      parseMode: "md",
-    });
-    log("INFO", "Notification sent successfully");
-    return true;
-  } catch (error) {
-    log("ERROR", "Failed to send notification", { error });
-    return false;
-  }
-}
-
-export async function sendNotification(
-  client: TelegramClient,
-  notifyEntity: NotifyEntity,
-  message: string,
-  useBot: boolean
-): Promise<boolean> {
+export async function sendNotification(message: string): Promise<boolean> {
   log("DEBUG", "Sending notification message...");
 
-  if (useBot) {
-    return sendViaBotApi(message);
-  }
-  return sendViaClient(client, notifyEntity, message);
+  const htmlMessage = convertMarkdownToHtml(message);
+  const results = await Promise.all(
+    TELEGRAM_USER_IDS.map((userId) => sendMessageToUser(userId, htmlMessage))
+  );
+
+  const successCount = results.filter(Boolean).length;
+  log("INFO", "Notifications sent", {
+    success: successCount,
+    total: TELEGRAM_USER_IDS.length,
+  });
+
+  return successCount > 0;
 }
 
-export async function sendPhotoNotification(
+async function sendPhotoToUser(
+  userId: string,
   photoBuffer: Buffer,
   caption: string
 ): Promise<boolean> {
   try {
     const formData = new FormData();
-    formData.append("chat_id", TELEGRAM_USER_ID);
+    formData.append("chat_id", userId);
     formData.append("caption", caption.substring(0, 1024));
     formData.append("parse_mode", "HTML");
     formData.append("photo", new Blob([new Uint8Array(photoBuffer)]), "photo.jpg");
@@ -102,19 +85,36 @@ export async function sendPhotoNotification(
 
     if (!response.ok) {
       const responseData = await response.json();
-      log("ERROR", "Failed to send photo via bot", { error: responseData });
+      log("ERROR", "Failed to send photo via bot", { userId, error: responseData });
       return false;
     }
 
-    log("INFO", "Photo notification sent via bot successfully");
     return true;
   } catch (error) {
-    log("ERROR", "Failed to send photo notification", { error });
+    log("ERROR", "Failed to send photo notification", { userId, error });
     return false;
   }
 }
 
-export async function sendAlbumNotification(
+export async function sendPhotoNotification(
+  photoBuffer: Buffer,
+  caption: string
+): Promise<boolean> {
+  const results = await Promise.all(
+    TELEGRAM_USER_IDS.map((userId) => sendPhotoToUser(userId, photoBuffer, caption))
+  );
+
+  const successCount = results.filter(Boolean).length;
+  log("INFO", "Photo notifications sent", {
+    success: successCount,
+    total: TELEGRAM_USER_IDS.length,
+  });
+
+  return successCount > 0;
+}
+
+async function sendAlbumToUser(
+  userId: string,
   photoBuffers: Buffer[],
   caption: string
 ): Promise<boolean> {
@@ -128,7 +128,7 @@ export async function sendAlbumNotification(
     }));
 
     const formData = new FormData();
-    formData.append("chat_id", TELEGRAM_USER_ID);
+    formData.append("chat_id", userId);
     formData.append("media", JSON.stringify(media));
     photoBuffers.forEach((buffer, index) => {
       formData.append(
@@ -148,16 +148,31 @@ export async function sendAlbumNotification(
 
     if (!response.ok) {
       const responseData = await response.json();
-      log("ERROR", "Failed to send album via bot", { error: responseData });
+      log("ERROR", "Failed to send album via bot", { userId, error: responseData });
       return false;
     }
 
-    log("INFO", "Album notification sent via bot successfully", {
-      photoCount: photoBuffers.length,
-    });
     return true;
   } catch (error) {
-    log("ERROR", "Failed to send album notification", { error });
+    log("ERROR", "Failed to send album notification", { userId, error });
     return false;
   }
+}
+
+export async function sendAlbumNotification(
+  photoBuffers: Buffer[],
+  caption: string
+): Promise<boolean> {
+  const results = await Promise.all(
+    TELEGRAM_USER_IDS.map((userId) => sendAlbumToUser(userId, photoBuffers, caption))
+  );
+
+  const successCount = results.filter(Boolean).length;
+  log("INFO", "Album notifications sent", {
+    success: successCount,
+    total: TELEGRAM_USER_IDS.length,
+    photoCount: photoBuffers.length,
+  });
+
+  return successCount > 0;
 }

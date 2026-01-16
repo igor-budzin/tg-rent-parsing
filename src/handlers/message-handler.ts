@@ -7,7 +7,7 @@ import {
   sendPhotoNotification,
   sendAlbumNotification,
 } from "../services/notification.js";
-import { NotifyEntity, MessageStats } from "../types/index.js";
+import { MessageStats } from "../types/index.js";
 
 async function downloadAlbumPhotos(
   client: TelegramClient,
@@ -34,15 +34,13 @@ async function downloadAlbumPhotos(
   return photoBuffers;
 }
 
-async function handleBotNotification(
+async function handleNotification(
   client: TelegramClient,
-  notifyEntity: NotifyEntity,
   message: Api.Message,
   channelEntity: Api.Channel,
   channelTitle: string,
   matchedKeywords: string[],
-  messageLink: string,
-  useBot: boolean
+  messageLink: string
 ): Promise<void> {
   const caption = `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;
 
@@ -59,19 +57,19 @@ async function handleBotNotification(
       if (photoBuffers.length > 1) {
         const success = await sendAlbumNotification(photoBuffers, caption);
         if (!success) {
-          await sendNotification(client, notifyEntity, caption, useBot);
+          await sendNotification(caption);
         }
       } else if (photoBuffers.length === 1) {
         const success = await sendPhotoNotification(photoBuffers[0], caption);
         if (!success) {
-          await sendNotification(client, notifyEntity, caption, useBot);
+          await sendNotification(caption);
         }
       } else {
-        await sendNotification(client, notifyEntity, caption, useBot);
+        await sendNotification(caption);
       }
     } catch (error) {
       log("ERROR", "Failed to process album", { error });
-      await sendNotification(client, notifyEntity, caption, useBot);
+      await sendNotification(caption);
     }
   } else if (message.photo) {
     try {
@@ -79,42 +77,23 @@ async function handleBotNotification(
       if (photoBuffer) {
         const success = await sendPhotoNotification(photoBuffer, caption);
         if (!success) {
-          await sendNotification(client, notifyEntity, caption, useBot);
+          await sendNotification(caption);
         }
       } else {
-        await sendNotification(client, notifyEntity, caption, useBot);
+        await sendNotification(caption);
       }
     } catch (error) {
       log("ERROR", "Failed to download/send photo", { error });
-      await sendNotification(client, notifyEntity, caption, useBot);
+      await sendNotification(caption);
     }
   } else {
-    await sendNotification(client, notifyEntity, caption, useBot);
+    await sendNotification(caption);
   }
-}
-
-async function handleClientNotification(
-  client: TelegramClient,
-  notifyEntity: NotifyEntity,
-  channelTitle: string,
-  matchedKeywords: string[],
-  messageText: string,
-  messageLink: string
-): Promise<void> {
-  const notification =
-    `*Match found!*\n\n` +
-    `*Channel:* ${channelTitle}\n` +
-    `*Keywords:* ${matchedKeywords.join(", ")}\n\n` +
-    `${messageText}\n\n${messageLink}`;
-
-  await sendNotification(client, notifyEntity, notification, false);
 }
 
 export function setupMessageHandler(
   client: TelegramClient,
   channelEntities: Map<string, Api.Channel>,
-  notifyEntity: NotifyEntity,
-  useBot: boolean,
   stats: MessageStats
 ): void {
   const channelIds = Array.from(channelEntities.values()).map((ch) => ch.id);
@@ -178,27 +157,14 @@ export function setupMessageHandler(
           totalMatches: stats.matchCount,
         });
 
-        if (useBot) {
-          await handleBotNotification(
-            client,
-            notifyEntity,
-            message,
-            channelEntity,
-            channelTitle,
-            matchedKeywords,
-            messageLink,
-            useBot
-          );
-        } else {
-          await handleClientNotification(
-            client,
-            notifyEntity,
-            channelTitle,
-            matchedKeywords,
-            messageText,
-            messageLink
-          );
-        }
+        await handleNotification(
+          client,
+          message,
+          channelEntity,
+          channelTitle,
+          matchedKeywords,
+          messageLink
+        );
       } else {
         log("DEBUG", "No keywords matched in message", {
           channel: channelTitle,

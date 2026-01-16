@@ -1,19 +1,17 @@
 import {
   API_ID,
   API_HASH,
-  NOTIFY_USER,
   CHANNELS_TO_WATCH,
   KEYWORDS,
   SESSION_FILE,
   BOT_TOKEN,
-  TELEGRAM_USER_ID,
+  TELEGRAM_USER_IDS,
 } from "./config.js";
 import { log } from "./utils/logger.js";
 import { closeReadline } from "./utils/prompt.js";
 import {
   createAndConnectClient,
   logCurrentUser,
-  resolveNotifyEntity,
   resolveChannels,
 } from "./services/telegram-client.js";
 import { isUsingBot } from "./services/notification.js";
@@ -28,17 +26,22 @@ function validateConfig(): void {
   }
 
   if (CHANNELS_TO_WATCH.length === 0) {
-    log("ERROR", "No channels configured in src/config.ts");
+    log("ERROR", "CHANNELS_TO_WATCH must be set in .env file (comma-separated)");
     process.exit(1);
   }
 
   if (KEYWORDS.length === 0) {
-    log("ERROR", "No keywords configured in src/config.ts");
+    log("ERROR", "KEYWORDS must be set in .env file (comma-separated)");
     process.exit(1);
   }
 
-  if (!NOTIFY_USER) {
-    log("ERROR", "NOTIFY_USER must be set in .env file");
+  if (!BOT_TOKEN) {
+    log("ERROR", "BOT_TOKEN must be set in .env file");
+    process.exit(1);
+  }
+
+  if (TELEGRAM_USER_IDS.length === 0) {
+    log("ERROR", "TELEGRAM_USER_IDS must be set in .env file (comma-separated)");
     process.exit(1);
   }
 }
@@ -47,7 +50,7 @@ function logConfiguration(): void {
   log("DEBUG", "Configuration loaded", {
     API_ID: API_ID ? `${API_ID} (set)` : "NOT SET",
     API_HASH: API_HASH ? `${API_HASH.substring(0, 4)}... (set)` : "NOT SET",
-    NOTIFY_USER: NOTIFY_USER || "NOT SET",
+    TELEGRAM_USER_IDS: TELEGRAM_USER_IDS.length > 0 ? TELEGRAM_USER_IDS : "NOT SET",
     CHANNELS_TO_WATCH,
     KEYWORDS,
     SESSION_FILE,
@@ -59,6 +62,7 @@ function logConfiguration(): void {
   log("INFO", `Will search for ${KEYWORDS.length} keyword(s)`, {
     keywords: KEYWORDS,
   });
+  log("INFO", `Will notify ${TELEGRAM_USER_IDS.length} user(s)`);
 }
 
 function setupPeriodicStatusLog(stats: MessageStats): void {
@@ -83,7 +87,6 @@ async function main(): Promise<void> {
   const client = await createAndConnectClient();
   await logCurrentUser(client);
 
-  const notifyEntity = await resolveNotifyEntity(client, NOTIFY_USER);
   const channelEntities = await resolveChannels(client, CHANNELS_TO_WATCH);
 
   if (channelEntities.size === 0) {
@@ -100,15 +103,13 @@ async function main(): Promise<void> {
   if (useBot) {
     log("INFO", "Bot notification mode enabled", {
       botTokenSet: !!BOT_TOKEN,
-      userIdSet: !!TELEGRAM_USER_ID,
+      userCount: TELEGRAM_USER_IDS.length,
     });
-  } else {
-    log("INFO", "Using client account for notifications (set BOT_TOKEN and TELEGRAM_USER_ID to use bot instead)");
   }
 
   const stats: MessageStats = { messageCount: 0, matchCount: 0 };
 
-  setupMessageHandler(client, channelEntities, notifyEntity, useBot, stats);
+  setupMessageHandler(client, channelEntities, stats);
 
   log("INFO", "=".repeat(50));
   log("INFO", "NOW WATCHING FOR NEW MESSAGES...");

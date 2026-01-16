@@ -6,7 +6,6 @@ import qrcode from "qrcode-terminal";
 import { API_ID, API_HASH, SESSION_FILE } from "../config.js";
 import { log } from "../utils/logger.js";
 import { prompt } from "../utils/prompt.js";
-import { NotifyEntity } from "../types/index.js";
 
 const AUTH_METHOD = process.env.AUTH_METHOD || "qr";
 
@@ -156,24 +155,6 @@ export async function logCurrentUser(client: TelegramClient): Promise<void> {
     username: me.username,
     phone: me.phone,
   });
-}
-
-export async function resolveNotifyEntity(
-  client: TelegramClient,
-  notifyUser: string
-): Promise<NotifyEntity> {
-  log("DEBUG", "Resolving notification target user...", { notifyUser });
-  try {
-    const entity = (await client.getEntity(notifyUser)) as NotifyEntity;
-    log("INFO", "Notification target resolved", {
-      type: entity.className,
-      id: entity.id.toString(),
-    });
-    return entity;
-  } catch (error) {
-    log("ERROR", `Could not find user: ${notifyUser}`, { error });
-    throw error;
-  }
 }
 
 export async function resolveChannels(
