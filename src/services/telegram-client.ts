@@ -8,17 +8,18 @@ import { log } from "../utils/logger.js";
 import { prompt } from "../utils/prompt.js";
 
 const AUTH_METHOD = process.env.AUTH_METHOD || "qr";
+const SESSION_STRING_ENV = process.env.SESSION_STRING || "";
 
-function loadSession(): string {
+function loadSessionFromFile(): string {
   log("INFO", "Checking for existing session file...", { path: SESSION_FILE });
   if (fs.existsSync(SESSION_FILE)) {
     const sessionString = fs.readFileSync(SESSION_FILE, "utf-8").trim();
-    log("INFO", "Found existing session, will attempt to reuse it", {
+    log("INFO", "Found existing session file, will attempt to reuse it", {
       sessionLength: sessionString.length,
     });
     return sessionString;
   }
-  log("INFO", "No existing session found, will need to authenticate");
+  log("INFO", "No existing session file found");
   return "";
 }
 
@@ -113,8 +114,7 @@ async function authenticateWithPhone(client: TelegramClient): Promise<void> {
   });
 }
 
-export async function createAndConnectClient(): Promise<TelegramClient> {
-  const sessionString = loadSession();
+async function tryConnectWithSession(sessionString: string): Promise<TelegramClient | null> {
   const stringSession = new StringSession(sessionString);
 
   log("DEBUG", "Creating TelegramClient instance...");
@@ -130,14 +130,54 @@ export async function createAndConnectClient(): Promise<TelegramClient> {
   log("INFO", "Connected to Telegram servers!");
 
   const isAuthorized = await client.isUserAuthorized();
-  log("INFO", `Authorization status: ${isAuthorized ? "Already authorized" : "Need to authenticate"}`);
+  if (isAuthorized) {
+    log("INFO", "Session is valid and authorized");
+    return client;
+  }
 
-  if (!isAuthorized) {
-    if (AUTH_METHOD === "qr") {
-      await authenticateWithQR(client);
-    } else {
-      await authenticateWithPhone(client);
+  log("WARN", "Session is invalid or expired");
+  await client.disconnect();
+  return null;
+}
+
+export async function createAndConnectClient(): Promise<TelegramClient> {
+  // Try SESSION_STRING from env first
+  if (SESSION_STRING_ENV) {
+    log("INFO", "Trying SESSION_STRING from environment...");
+    const client = await tryConnectWithSession(SESSION_STRING_ENV);
+    if (client) {
+      return client;
     }
+    log("WARN", "SESSION_STRING from env is invalid, trying session file...");
+  }
+
+  // Try session file
+  const fileSession = loadSessionFromFile();
+  if (fileSession) {
+    const client = await tryConnectWithSession(fileSession);
+    if (client) {
+      saveSession(client);
+      return client;
+    }
+    log("WARN", "Session file is invalid, need to authenticate...");
+  }
+
+  // No valid session, need to authenticate
+  log("INFO", "No valid session found, starting authentication...");
+  const stringSession = new StringSession("");
+  const client = new TelegramClient(stringSession, API_ID, API_HASH, {
+    connectionRetries: 5,
+    useWSS: false,
+  });
+
+  client.setLogLevel("error" as never);
+
+  await client.connect();
+
+  if (AUTH_METHOD === "qr") {
+    await authenticateWithQR(client);
+  } else {
+    await authenticateWithPhone(client);
   }
 
   log("INFO", "Successfully authenticated with Telegram!");
