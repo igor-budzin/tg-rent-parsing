@@ -33,6 +33,20 @@ function saveSession(client: TelegramClient): void {
   });
 }
 
+function deleteSessionFile(): void {
+  if (fs.existsSync(SESSION_FILE)) {
+    fs.unlinkSync(SESSION_FILE);
+    log("INFO", "Session file deleted", { path: SESSION_FILE });
+  }
+}
+
+function isAuthKeyDuplicatedError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("AUTH_KEY_DUPLICATED");
+  }
+  return false;
+}
+
 async function authenticateWithQR(client: TelegramClient): Promise<void> {
   log("INFO", "Starting QR code authentication...");
   log("INFO", "Scan the QR code below with your Telegram app:");
@@ -115,7 +129,12 @@ async function authenticateWithPhone(client: TelegramClient): Promise<void> {
   });
 }
 
-async function tryConnectWithSession(sessionString: string): Promise<TelegramClient | null> {
+interface SessionResult {
+  client: TelegramClient | null;
+  authKeyDuplicated: boolean;
+}
+
+async function tryConnectWithSession(sessionString: string): Promise<SessionResult> {
   const stringSession = new StringSession(sessionString);
 
   log("DEBUG", "Creating TelegramClient instance...");
@@ -126,45 +145,36 @@ async function tryConnectWithSession(sessionString: string): Promise<TelegramCli
 
   client.setLogLevel("error" as never);
 
-  log("INFO", "Connecting to Telegram servers...");
-  await client.connect();
-  log("INFO", "Connected to Telegram servers!");
+  try {
+    log("INFO", "Connecting to Telegram servers...");
+    await client.connect();
+    log("INFO", "Connected to Telegram servers!");
 
-  const isAuthorized = await client.isUserAuthorized();
-  if (isAuthorized) {
-    log("INFO", "Session is valid and authorized");
-    return client;
+    const isAuthorized = await client.isUserAuthorized();
+    if (isAuthorized) {
+      log("INFO", "Session is valid and authorized");
+      return { client, authKeyDuplicated: false };
+    }
+
+    log("WARN", "Session is invalid or expired");
+    await client.disconnect();
+    return { client: null, authKeyDuplicated: false };
+  } catch (error) {
+    if (isAuthKeyDuplicatedError(error)) {
+      log("WARN", "AUTH_KEY_DUPLICATED error detected - session used from another location");
+      try {
+        await client.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+      return { client: null, authKeyDuplicated: true };
+    }
+    throw error;
   }
-
-  log("WARN", "Session is invalid or expired");
-  await client.disconnect();
-  return null;
 }
 
-export async function createAndConnectClient(): Promise<TelegramClient> {
-  // Try SESSION_STRING from env first
-  if (SESSION_STRING_ENV) {
-    log("INFO", "Trying SESSION_STRING from environment...");
-    const client = await tryConnectWithSession(SESSION_STRING_ENV);
-    if (client) {
-      return client;
-    }
-    log("WARN", "SESSION_STRING from env is invalid, trying session file...");
-  }
-
-  // Try session file
-  const fileSession = loadSessionFromFile();
-  if (fileSession) {
-    const client = await tryConnectWithSession(fileSession);
-    if (client) {
-      saveSession(client);
-      return client;
-    }
-    log("WARN", "Session file is invalid, need to authenticate...");
-  }
-
-  // No valid session, need to authenticate
-  log("INFO", "No valid session found, starting authentication...");
+async function performFreshAuthentication(): Promise<TelegramClient> {
+  log("INFO", "Starting fresh authentication...");
   const stringSession = new StringSession("");
   const client = new TelegramClient(stringSession, API_ID, API_HASH, {
     connectionRetries: 5,
@@ -185,6 +195,50 @@ export async function createAndConnectClient(): Promise<TelegramClient> {
   saveSession(client);
 
   return client;
+}
+
+export async function createAndConnectClient(): Promise<TelegramClient> {
+  let needsFreshAuth = false;
+
+  // Try SESSION_STRING from env first
+  if (SESSION_STRING_ENV) {
+    log("INFO", "Trying SESSION_STRING from environment...");
+    const result = await tryConnectWithSession(SESSION_STRING_ENV);
+    if (result.client) {
+      return result.client;
+    }
+    if (result.authKeyDuplicated) {
+      log("WARN", "SESSION_STRING from env has AUTH_KEY_DUPLICATED error");
+      needsFreshAuth = true;
+    } else {
+      log("WARN", "SESSION_STRING from env is invalid, trying session file...");
+    }
+  }
+
+  // Try session file (skip if we already know we need fresh auth due to AUTH_KEY_DUPLICATED)
+  if (!needsFreshAuth) {
+    const fileSession = loadSessionFromFile();
+    if (fileSession) {
+      const result = await tryConnectWithSession(fileSession);
+      if (result.client) {
+        saveSession(result.client);
+        return result.client;
+      }
+      if (result.authKeyDuplicated) {
+        log("WARN", "Session file has AUTH_KEY_DUPLICATED error, deleting and re-authenticating...");
+        deleteSessionFile();
+        needsFreshAuth = true;
+      } else {
+        log("WARN", "Session file is invalid, need to authenticate...");
+      }
+    }
+  } else {
+    // If env session had AUTH_KEY_DUPLICATED, also delete local session file
+    deleteSessionFile();
+  }
+
+  // No valid session, need to authenticate
+  return performFreshAuthentication();
 }
 
 export async function logCurrentUser(client: TelegramClient): Promise<void> {
