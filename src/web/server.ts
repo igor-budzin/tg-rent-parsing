@@ -8,8 +8,9 @@ import {
   submitInput,
   cancelLogin,
 } from "../services/telegram-auth.js";
-import { countActiveSubscribers } from "../services/subscribers.js";
+import { countActiveSubscribers, listSubscribers } from "../services/subscribers.js";
 import { LOGIN_PAGE_HTML } from "./login-page.js";
+import { SUBSCRIBERS_PAGE_HTML } from "./subscribers-page.js";
 
 const MAX_BODY_BYTES = 10_000;
 
@@ -49,6 +50,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "GET /":
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(LOGIN_PAGE_HTML);
+      return;
+
+    case "GET /subscribers":
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(SUBSCRIBERS_PAGE_HTML);
+      return;
+
+    case "GET /api/subscribers":
+      sendJson(res, 200, await listSubscribers());
       return;
 
     case "GET /api/state": {

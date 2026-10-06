@@ -45,6 +45,7 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
   dt { color: var(--muted); }
   dd { margin: 0; }
+  a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -106,7 +107,7 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
     logged_in: (s) => '<h1 class="ok">Parser is running</h1>' +
       '<p class="muted">Logged in. Nothing else to do here.</p>' +
       '<dl><dt>Account</dt><dd>' + esc(s.user) + '</dd>' +
-      '<dt>Subscribers</dt><dd>' + (s.subscribers ?? "—") + '</dd></dl>',
+      '<dt>Subscribers</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — view list</a></dd></dl>',
   };
 
   function render(s) {

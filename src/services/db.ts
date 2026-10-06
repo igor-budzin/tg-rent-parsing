@@ -15,6 +15,7 @@ export async function initDb(): Promise<void> {
       unsubscribed_at TIMESTAMPTZ
     )
   `);
+  await pool.query("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_name TEXT");
   // Single-row table holding the Telegram user session
   await pool.query(`
     CREATE TABLE IF NOT EXISTS telegram_session (

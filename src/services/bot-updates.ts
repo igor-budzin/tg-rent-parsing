@@ -9,6 +9,7 @@ interface TelegramUser {
   id: number;
   username?: string;
   first_name?: string;
+  last_name?: string;
 }
 
 interface TelegramUpdate {
@@ -66,6 +67,7 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
       chatId: String(chatId),
       username: message.from?.username,
       firstName: message.from?.first_name,
+      lastName: message.from?.last_name,
     });
     log("INFO", "User subscribed", { chatId, username: message.from?.username });
     await reply(chatId, "You are subscribed to rent notifications. Send /stop to unsubscribe.");
