@@ -2,6 +2,7 @@ import { TelegramClient, Api } from "telegram";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { log } from "../utils/logger.js";
 import { findMatchingKeywords } from "../utils/keywords.js";
+import { findWatchedChannel } from "../services/watch-config.js";
 import {
   sendNotification,
   sendPhotoNotification,
@@ -91,17 +92,17 @@ async function handleNotification(
   }
 }
 
-export function setupMessageHandler(
-  client: TelegramClient,
-  channelEntities: Map<string, Api.Channel>,
-  stats: MessageStats
-): void {
-  const channelIds = Array.from(channelEntities.values()).map((ch) => ch.id);
+function buildMessageLink(channelEntity: Api.Channel, messageId: number): string {
+  return channelEntity.username
+    ? `https://t.me/${channelEntity.username}/${messageId}`
+    : `https://t.me/c/${channelEntity.id.toString()}/${messageId}`;
+}
 
-  log("DEBUG", "Setting up NewMessage event handler", {
-    channelIds: channelIds.map((id) => id.toString()),
-  });
+export function setupMessageHandler(client: TelegramClient, stats: MessageStats): void {
+  log("DEBUG", "Setting up NewMessage event handler");
 
+  // No chats filter: the watched channel list can change at runtime (web UI),
+  // so each message is checked against the current list instead
   client.addEventHandler(
     async (event: NewMessageEvent) => {
       const message = event.message;
@@ -110,25 +111,12 @@ export function setupMessageHandler(
         return;
       }
 
+      const chatId = message.chatId?.toString();
+      const watched = chatId ? findWatchedChannel(chatId) : undefined;
+      if (!watched) return;
+
       stats.messageCount++;
-      const chat = await message.getChat();
-      if (!chat || !("id" in chat)) {
-        log("DEBUG", "Could not get chat from message, skipping");
-        return;
-      }
-
-      const channelEntry = Array.from(channelEntities.entries()).find(
-        ([_, entity]) => entity.id.equals(chat.id)
-      );
-
-      if (!channelEntry) {
-        log("DEBUG", "Message from unwatched chat, skipping", {
-          chatId: chat.id.toString(),
-        });
-        return;
-      }
-
-      const [channelName, channelEntity] = channelEntry;
+      const { name: channelName, entity: channelEntity } = watched;
       const messageText = message.message;
       const channelTitle = channelEntity.title || channelName;
 
@@ -147,7 +135,7 @@ export function setupMessageHandler(
 
       if (matchedKeywords.length > 0) {
         stats.matchCount++;
-        const messageLink = `https://t.me/${channelName}/${message.id}`;
+        const messageLink = buildMessageLink(channelEntity, message.id);
 
         log("INFO", `KEYWORD MATCH FOUND!`, {
           channel: channelTitle,
@@ -172,7 +160,7 @@ export function setupMessageHandler(
         });
       }
     },
-    new NewMessage({ chats: channelIds })
+    new NewMessage({})
   );
 
   log("INFO", "Event handler registered successfully");

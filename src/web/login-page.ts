@@ -105,9 +105,10 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
       '<button class="secondary" data-action="cancel">Cancel</button>',
 
     logged_in: (s) => '<h1 class="ok">Parser is running</h1>' +
-      '<p class="muted">Logged in. Nothing else to do here.</p>' +
+      '<p class="muted">Logged in and watching for new messages.</p>' +
       '<dl><dt>Account</dt><dd>' + esc(s.user) + '</dd>' +
-      '<dt>Subscribers</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — view list</a></dd></dl>',
+      '<dt>Subscribers</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — view list</a></dd>' +
+      '<dt>Watching</dt><dd><a href="/settings">Keywords &amp; channels</a></dd></dl>',
   };
 
   function render(s) {

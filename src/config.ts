@@ -10,14 +10,14 @@ export const BOT_TOKEN = process.env.BOT_TOKEN || "";
 // Postgres connection string for storing bot subscribers
 export const DATABASE_URL = process.env.DATABASE_URL || "";
 
-// Channels to monitor (comma-separated usernames without @, or channel IDs)
-export const CHANNELS_TO_WATCH: string[] = (process.env.CHANNELS_TO_WATCH || "")
+// Channels and keywords are managed in the web UI. These env vars are only used once,
+// to seed the database on first start (comma-separated).
+export const ENV_CHANNELS: string[] = (process.env.CHANNELS_TO_WATCH || "")
   .split(",")
   .map((ch) => ch.trim())
   .filter(Boolean);
 
-// Keywords to search for (comma-separated, case-insensitive)
-export const KEYWORDS: string[] = (process.env.KEYWORDS || "")
+export const ENV_KEYWORDS: string[] = (process.env.KEYWORDS || "")
   .split(",")
   .map((kw) => kw.trim())
   .filter(Boolean);

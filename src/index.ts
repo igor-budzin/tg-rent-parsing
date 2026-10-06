@@ -1,22 +1,22 @@
 import {
   API_ID,
   API_HASH,
-  CHANNELS_TO_WATCH,
-  KEYWORDS,
   BOT_TOKEN,
   DATABASE_URL,
   ADMIN_PASSWORD,
   PORT,
 } from "./config.js";
 import { log } from "./utils/logger.js";
-import {
-  createAndConnectClient,
-  logCurrentUser,
-  resolveChannels,
-} from "./services/telegram-client.js";
+import { createAndConnectClient, logCurrentUser } from "./services/telegram-client.js";
 import { initDb, closeDb } from "./services/db.js";
 import { countActiveSubscribers } from "./services/subscribers.js";
 import { setLoggedIn } from "./services/telegram-auth.js";
+import {
+  loadWatchConfig,
+  attachClient,
+  getChannelNames,
+  getKeywords,
+} from "./services/watch-config.js";
 import { startWebServer } from "./web/server.js";
 import { startBotUpdatesPolling } from "./services/bot-updates.js";
 import { setupMessageHandler } from "./handlers/message-handler.js";
@@ -26,16 +26,6 @@ function validateConfig(): void {
   if (!API_ID || !API_HASH) {
     log("ERROR", "API_ID and API_HASH must be set in .env file");
     log("ERROR", "Get them from https://my.telegram.org/apps");
-    process.exit(1);
-  }
-
-  if (CHANNELS_TO_WATCH.length === 0) {
-    log("ERROR", "CHANNELS_TO_WATCH must be set in .env file (comma-separated)");
-    process.exit(1);
-  }
-
-  if (KEYWORDS.length === 0) {
-    log("ERROR", "KEYWORDS must be set in .env file (comma-separated)");
     process.exit(1);
   }
 
@@ -62,21 +52,19 @@ function logConfiguration(): void {
     DATABASE_URL: DATABASE_URL ? "(set)" : "NOT SET",
     ADMIN_PASSWORD: ADMIN_PASSWORD ? "(set)" : "NOT SET",
     PORT,
-    CHANNELS_TO_WATCH,
-    KEYWORDS,
-  });
-
-  log("INFO", `Will watch ${CHANNELS_TO_WATCH.length} channel(s)`, {
-    channels: CHANNELS_TO_WATCH,
-  });
-  log("INFO", `Will search for ${KEYWORDS.length} keyword(s)`, {
-    keywords: KEYWORDS,
   });
 }
 
 async function setupDatabase(): Promise<void> {
   await initDb();
+  await loadWatchConfig();
   log("INFO", `Will notify ${await countActiveSubscribers()} subscriber(s)`);
+  log("INFO", `Will watch ${getChannelNames().length} channel(s)`, {
+    channels: getChannelNames(),
+  });
+  log("INFO", `Will search for ${getKeywords().length} keyword(s)`, {
+    keywords: getKeywords(),
+  });
 }
 
 function setupPeriodicStatusLog(stats: MessageStats): void {
@@ -109,28 +97,16 @@ async function main(): Promise<void> {
   const me = await logCurrentUser(client);
   setLoggedIn([me.firstName, me.lastName].filter(Boolean).join(" ") + (me.username ? ` (@${me.username})` : ""));
 
-  const channelEntities = await resolveChannels(client, CHANNELS_TO_WATCH);
-
-  if (channelEntities.size === 0) {
-    log("ERROR", "No valid channels found. Exiting.");
-    process.exit(1);
-  }
-
-  log("INFO", `Successfully resolved ${channelEntities.size}/${CHANNELS_TO_WATCH.length} channels`);
+  await attachClient(client);
 
   const stats: MessageStats = { messageCount: 0, matchCount: 0 };
 
-  setupMessageHandler(client, channelEntities, stats);
+  setupMessageHandler(client, stats);
 
   log("INFO", "=".repeat(50));
   log("INFO", "NOW WATCHING FOR NEW MESSAGES...");
+  log("INFO", "Channels and keywords can be changed in the web UI");
   log("INFO", "=".repeat(50));
-  log("INFO", `Channels: ${Array.from(channelEntities.values()).map((ch) => ch.title).join(", ")}`);
-  log("INFO", `Keywords: ${KEYWORDS.join(", ")}`);
-  log("INFO", "Press Ctrl+C to stop");
-  log("INFO", "=".repeat(50));
-
-  log("INFO", `Channel Parser Started - Watching: ${CHANNELS_TO_WATCH.length} channel(s), Keywords: ${KEYWORDS.join(", ")}`);
 
   setupPeriodicStatusLog(stats);
 

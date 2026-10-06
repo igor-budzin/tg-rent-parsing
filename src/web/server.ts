@@ -11,6 +11,14 @@ import {
 import { countActiveSubscribers, listSubscribers } from "../services/subscribers.js";
 import { LOGIN_PAGE_HTML } from "./login-page.js";
 import { SUBSCRIBERS_PAGE_HTML } from "./subscribers-page.js";
+import { SETTINGS_PAGE_HTML } from "./settings-page.js";
+import {
+  getWatchConfigView,
+  addKeyword,
+  removeKeyword,
+  addChannel,
+  removeChannel,
+} from "../services/watch-config.js";
 
 const MAX_BODY_BYTES = 10_000;
 
@@ -60,6 +68,40 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "GET /api/subscribers":
       sendJson(res, 200, await listSubscribers());
       return;
+
+    case "GET /settings":
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(SETTINGS_PAGE_HTML);
+      return;
+
+    case "GET /api/settings":
+      sendJson(res, 200, getWatchConfigView());
+      return;
+
+    case "POST /api/keywords":
+    case "POST /api/channels": {
+      const { value } = await readJson(req);
+      if (typeof value !== "string") {
+        sendJson(res, 400, { error: "Value is required" });
+        return;
+      }
+      const add = route === "POST /api/keywords" ? addKeyword : addChannel;
+      const error = await add(value);
+      sendJson(res, error ? 400 : 200, error ? { error } : getWatchConfigView());
+      return;
+    }
+
+    case "DELETE /api/keywords":
+    case "DELETE /api/channels": {
+      const { value } = await readJson(req);
+      if (typeof value !== "string") {
+        sendJson(res, 400, { error: "Value is required" });
+        return;
+      }
+      await (route === "DELETE /api/keywords" ? removeKeyword : removeChannel)(value);
+      sendJson(res, 200, getWatchConfigView());
+      return;
+    }
 
     case "GET /api/state": {
       const subscribers = await countActiveSubscribers().catch(() => null);

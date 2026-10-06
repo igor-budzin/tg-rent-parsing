@@ -72,51 +72,41 @@ export async function logCurrentUser(client: TelegramClient): Promise<Api.User> 
   return me;
 }
 
-export async function resolveChannels(
+// Throws if the channel can't be found
+export async function resolveChannel(
   client: TelegramClient,
-  channelNames: string[]
-): Promise<Map<string, Api.Channel>> {
-  log("DEBUG", "Resolving channel entities...");
-  const channelEntities = new Map<string, Api.Channel>();
+  channelName: string
+): Promise<Api.Channel> {
+  log("DEBUG", `Attempting to resolve channel: ${channelName}`);
+  let entity: Api.Channel;
 
-  for (const channelName of channelNames) {
-    log("DEBUG", `Attempting to resolve channel: ${channelName}`);
-    try {
-      let entity: Api.Channel;
+  // Check if the channel identifier is a numeric ID (with optional -100 prefix)
+  const numericMatch = channelName.match(/^-?(\d+)$/);
+  if (numericMatch) {
+    let channelIdStr = channelName;
 
-      // Check if the channel identifier is a numeric ID (with optional -100 prefix)
-      const numericMatch = channelName.match(/^-?(\d+)$/);
-      if (numericMatch) {
-        let channelIdStr = channelName;
-
-        // Handle the -100 prefix that Telegram uses for channel IDs in some contexts
-        // If ID is negative and starts with -100, extract the actual channel ID
-        if (channelIdStr.startsWith("-100")) {
-          channelIdStr = channelIdStr.slice(4);
-        } else if (channelIdStr.startsWith("-")) {
-          channelIdStr = channelIdStr.slice(1);
-        }
-
-        log("DEBUG", `Resolving as numeric channel ID: ${channelIdStr}`);
-        entity = (await client.getEntity(
-          new Api.PeerChannel({ channelId: bigInt(channelIdStr) })
-        )) as Api.Channel;
-      } else {
-        // Treat as username
-        entity = (await client.getEntity(channelName)) as Api.Channel;
-      }
-
-      channelEntities.set(channelName, entity);
-      log("INFO", `Channel resolved: ${channelName}`, {
-        title: entity.title,
-        id: entity.id.toString(),
-        username: entity.username,
-        participantsCount: entity.participantsCount,
-      });
-    } catch (error) {
-      log("ERROR", `Could not find channel: ${channelName}`, { error });
+    // Handle the -100 prefix that Telegram uses for channel IDs in some contexts
+    // If ID is negative and starts with -100, extract the actual channel ID
+    if (channelIdStr.startsWith("-100")) {
+      channelIdStr = channelIdStr.slice(4);
+    } else if (channelIdStr.startsWith("-")) {
+      channelIdStr = channelIdStr.slice(1);
     }
+
+    log("DEBUG", `Resolving as numeric channel ID: ${channelIdStr}`);
+    entity = (await client.getEntity(
+      new Api.PeerChannel({ channelId: bigInt(channelIdStr) })
+    )) as Api.Channel;
+  } else {
+    // Treat as username
+    entity = (await client.getEntity(channelName)) as Api.Channel;
   }
 
-  return channelEntities;
+  log("INFO", `Channel resolved: ${channelName}`, {
+    title: entity.title,
+    id: entity.id.toString(),
+    username: entity.username,
+    participantsCount: entity.participantsCount,
+  });
+  return entity;
 }

@@ -24,6 +24,7 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
   header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
   h1 { font-size: 20px; margin: 0; }
   a { color: var(--accent); }
+  nav { display: flex; gap: 16px; font-size: 14px; }
   .summary { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
   .filters { display: flex; gap: 8px; margin-bottom: 12px; }
   .filters button {
@@ -48,7 +49,7 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
 <main>
   <header>
     <h1>Bot subscribers</h1>
-    <a href="/">← Back to status</a>
+    <nav><a href="/">Status</a><a href="/settings">Settings</a></nav>
   </header>
   <p class="summary" id="summary">Loading…</p>
   <div class="filters" role="group" aria-label="Filter subscribers">
