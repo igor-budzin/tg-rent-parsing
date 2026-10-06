@@ -3,18 +3,22 @@ import {
   API_HASH,
   CHANNELS_TO_WATCH,
   KEYWORDS,
-  SESSION_FILE,
   BOT_TOKEN,
-  TELEGRAM_USER_IDS,
+  DATABASE_URL,
+  ADMIN_PASSWORD,
+  PORT,
 } from "./config.js";
 import { log } from "./utils/logger.js";
-import { closeReadline } from "./utils/prompt.js";
 import {
   createAndConnectClient,
   logCurrentUser,
   resolveChannels,
 } from "./services/telegram-client.js";
-import { isUsingBot } from "./services/notification.js";
+import { initDb, closeDb } from "./services/db.js";
+import { countActiveSubscribers } from "./services/subscribers.js";
+import { setLoggedIn } from "./services/telegram-auth.js";
+import { startWebServer } from "./web/server.js";
+import { startBotUpdatesPolling } from "./services/bot-updates.js";
 import { setupMessageHandler } from "./handlers/message-handler.js";
 import { MessageStats } from "./types/index.js";
 
@@ -40,8 +44,13 @@ function validateConfig(): void {
     process.exit(1);
   }
 
-  if (TELEGRAM_USER_IDS.length === 0) {
-    log("ERROR", "TELEGRAM_USER_IDS must be set in .env file (comma-separated)");
+  if (!DATABASE_URL) {
+    log("ERROR", "DATABASE_URL must be set in .env file");
+    process.exit(1);
+  }
+
+  if (!ADMIN_PASSWORD) {
+    log("ERROR", "ADMIN_PASSWORD must be set in .env file (protects the login web UI)");
     process.exit(1);
   }
 }
@@ -50,10 +59,11 @@ function logConfiguration(): void {
   log("DEBUG", "Configuration loaded", {
     API_ID: API_ID ? `${API_ID} (set)` : "NOT SET",
     API_HASH: API_HASH ? `${API_HASH.substring(0, 4)}... (set)` : "NOT SET",
-    TELEGRAM_USER_IDS: TELEGRAM_USER_IDS.length > 0 ? TELEGRAM_USER_IDS : "NOT SET",
+    DATABASE_URL: DATABASE_URL ? "(set)" : "NOT SET",
+    ADMIN_PASSWORD: ADMIN_PASSWORD ? "(set)" : "NOT SET",
+    PORT,
     CHANNELS_TO_WATCH,
     KEYWORDS,
-    SESSION_FILE,
   });
 
   log("INFO", `Will watch ${CHANNELS_TO_WATCH.length} channel(s)`, {
@@ -62,15 +72,20 @@ function logConfiguration(): void {
   log("INFO", `Will search for ${KEYWORDS.length} keyword(s)`, {
     keywords: KEYWORDS,
   });
-  log("INFO", `Will notify ${TELEGRAM_USER_IDS.length} user(s)`);
+}
+
+async function setupDatabase(): Promise<void> {
+  await initDb();
+  log("INFO", `Will notify ${await countActiveSubscribers()} subscriber(s)`);
 }
 
 function setupPeriodicStatusLog(stats: MessageStats): void {
-  setInterval(() => {
+  setInterval(async () => {
     log("INFO", "Status update", {
       uptime: process.uptime().toFixed(0) + "s",
       messagesReceived: stats.messageCount,
       matchesFound: stats.matchCount,
+      subscribers: await countActiveSubscribers().catch(() => "unknown"),
       memoryUsage: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB`,
     });
   }, 60000);
@@ -84,8 +99,15 @@ async function main(): Promise<void> {
   logConfiguration();
   validateConfig();
 
+  await setupDatabase();
+  startWebServer();
+  startBotUpdatesPolling().catch((err) => {
+    log("ERROR", "Bot updates polling stopped", { error: String(err) });
+  });
+
   const client = await createAndConnectClient();
-  await logCurrentUser(client);
+  const me = await logCurrentUser(client);
+  setLoggedIn([me.firstName, me.lastName].filter(Boolean).join(" ") + (me.username ? ` (@${me.username})` : ""));
 
   const channelEntities = await resolveChannels(client, CHANNELS_TO_WATCH);
 
@@ -95,17 +117,6 @@ async function main(): Promise<void> {
   }
 
   log("INFO", `Successfully resolved ${channelEntities.size}/${CHANNELS_TO_WATCH.length} channels`);
-
-  closeReadline();
-  log("DEBUG", "Readline interface closed");
-
-  const useBot = isUsingBot();
-  if (useBot) {
-    log("INFO", "Bot notification mode enabled", {
-      botTokenSet: !!BOT_TOKEN,
-      userCount: TELEGRAM_USER_IDS.length,
-    });
-  }
 
   const stats: MessageStats = { messageCount: 0, matchCount: 0 };
 
@@ -132,6 +143,7 @@ async function main(): Promise<void> {
       uptime: process.uptime().toFixed(0) + "s",
     });
     await client.disconnect();
+    await closeDb();
     log("INFO", "Disconnected from Telegram. Goodbye!");
     process.exit(0);
   });

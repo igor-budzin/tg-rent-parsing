@@ -7,11 +7,8 @@ export const API_HASH = process.env.API_HASH || "";
 // Telegram Bot token (get from @BotFather)
 export const BOT_TOKEN = process.env.BOT_TOKEN || "";
 
-// Telegram user IDs for notifications (comma-separated, get from @userinfobot)
-export const TELEGRAM_USER_IDS: string[] = (process.env.TELEGRAM_USER_IDS || "")
-  .split(",")
-  .map((id) => id.trim())
-  .filter(Boolean);
+// Postgres connection string for storing bot subscribers
+export const DATABASE_URL = process.env.DATABASE_URL || "";
 
 // Channels to monitor (comma-separated usernames without @, or channel IDs)
 export const CHANNELS_TO_WATCH: string[] = (process.env.CHANNELS_TO_WATCH || "")
@@ -28,5 +25,6 @@ export const KEYWORDS: string[] = (process.env.KEYWORDS || "")
 // Check interval in milliseconds (default: 60 seconds)
 export const CHECK_INTERVAL_MS = parseInt(process.env.CHECK_INTERVAL_MS || "60000");
 
-// Session file path
-export const SESSION_FILE = "./session.txt";
+// Web UI for Telegram login (Railway sets PORT automatically)
+export const PORT = parseInt(process.env.PORT || "3000");
+export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";

@@ -1,14 +1,37 @@
-import { BOT_TOKEN, TELEGRAM_USER_IDS } from "../config.js";
+import { BOT_TOKEN } from "../config.js";
 import { log } from "../utils/logger.js";
-
-export function isUsingBot(): boolean {
-  return !!(BOT_TOKEN && TELEGRAM_USER_IDS.length > 0);
-}
+import { getActiveSubscriberIds, removeSubscriber } from "./subscribers.js";
 
 function convertMarkdownToHtml(text: string): string {
   return text
     .replace(/\*([^*]+)\*/g, "<b>$1</b>")
     .replace(/_([^_]+)_/g, "<i>$1</i>");
+}
+
+// 403 means the user blocked the bot or deleted their account — stop sending to them
+async function handleSendFailure(userId: string, status: number): Promise<void> {
+  if (status === 403) {
+    await removeSubscriber(userId);
+    log("INFO", "Unsubscribed user who blocked the bot", { userId });
+  }
+}
+
+async function sendToAllSubscribers(
+  label: string,
+  send: (userId: string) => Promise<boolean>,
+  extra?: Record<string, unknown>
+): Promise<boolean> {
+  const userIds = await getActiveSubscriberIds();
+  if (userIds.length === 0) {
+    log("WARN", `${label} skipped: no subscribers`);
+    return false;
+  }
+
+  const results = await Promise.all(userIds.map(send));
+  const successCount = results.filter(Boolean).length;
+  log("INFO", `${label} sent`, { success: successCount, total: userIds.length, ...extra });
+
+  return successCount > 0;
 }
 
 async function sendMessageToUser(userId: string, htmlMessage: string): Promise<boolean> {
@@ -32,10 +55,8 @@ async function sendMessageToUser(userId: string, htmlMessage: string): Promise<b
         userId,
         status: response.status,
         error: responseData,
-        hint: responseData?.description?.includes("chat not found")
-          ? "User needs to start a chat with your bot first! Send /start to your bot."
-          : undefined,
       });
+      await handleSendFailure(userId, response.status);
       return false;
     }
 
@@ -50,17 +71,9 @@ export async function sendNotification(message: string): Promise<boolean> {
   log("DEBUG", "Sending notification message...");
 
   const htmlMessage = convertMarkdownToHtml(message);
-  const results = await Promise.all(
-    TELEGRAM_USER_IDS.map((userId) => sendMessageToUser(userId, htmlMessage))
+  return sendToAllSubscribers("Notifications", (userId) =>
+    sendMessageToUser(userId, htmlMessage)
   );
-
-  const successCount = results.filter(Boolean).length;
-  log("INFO", "Notifications sent", {
-    success: successCount,
-    total: TELEGRAM_USER_IDS.length,
-  });
-
-  return successCount > 0;
 }
 
 async function sendPhotoToUser(
@@ -86,6 +99,7 @@ async function sendPhotoToUser(
     if (!response.ok) {
       const responseData = await response.json();
       log("ERROR", "Failed to send photo via bot", { userId, error: responseData });
+      await handleSendFailure(userId, response.status);
       return false;
     }
 
@@ -100,17 +114,9 @@ export async function sendPhotoNotification(
   photoBuffer: Buffer,
   caption: string
 ): Promise<boolean> {
-  const results = await Promise.all(
-    TELEGRAM_USER_IDS.map((userId) => sendPhotoToUser(userId, photoBuffer, caption))
+  return sendToAllSubscribers("Photo notifications", (userId) =>
+    sendPhotoToUser(userId, photoBuffer, caption)
   );
-
-  const successCount = results.filter(Boolean).length;
-  log("INFO", "Photo notifications sent", {
-    success: successCount,
-    total: TELEGRAM_USER_IDS.length,
-  });
-
-  return successCount > 0;
 }
 
 async function sendAlbumToUser(
@@ -149,6 +155,7 @@ async function sendAlbumToUser(
     if (!response.ok) {
       const responseData = await response.json();
       log("ERROR", "Failed to send album via bot", { userId, error: responseData });
+      await handleSendFailure(userId, response.status);
       return false;
     }
 
@@ -163,16 +170,9 @@ export async function sendAlbumNotification(
   photoBuffers: Buffer[],
   caption: string
 ): Promise<boolean> {
-  const results = await Promise.all(
-    TELEGRAM_USER_IDS.map((userId) => sendAlbumToUser(userId, photoBuffers, caption))
+  return sendToAllSubscribers(
+    "Album notifications",
+    (userId) => sendAlbumToUser(userId, photoBuffers, caption),
+    { photoCount: photoBuffers.length }
   );
-
-  const successCount = results.filter(Boolean).length;
-  log("INFO", "Album notifications sent", {
-    success: successCount,
-    total: TELEGRAM_USER_IDS.length,
-    photoCount: photoBuffers.length,
-  });
-
-  return successCount > 0;
 }
