@@ -19,7 +19,7 @@ import {
 } from "./services/watch-config.js";
 import { startWebServer } from "./web/server.js";
 import { startBotUpdatesPolling } from "./services/bot-updates.js";
-import { setupMessageHandler } from "./handlers/message-handler.js";
+import { setupMessageHandler, startChannelPolling } from "./handlers/message-handler.js";
 import { MessageStats } from "./types/index.js";
 
 function validateConfig(): void {
@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   const stats: MessageStats = { messageCount: 0, matchCount: 0 };
 
   setupMessageHandler(client, stats);
+  startChannelPolling(client, stats);
 
   log("INFO", "=".repeat(50));
   log("INFO", "NOW WATCHING FOR NEW MESSAGES...");

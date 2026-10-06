@@ -2,13 +2,17 @@ import { TelegramClient, Api } from "telegram";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { log } from "../utils/logger.js";
 import { findMatchingKeywords } from "../utils/keywords.js";
-import { findWatchedChannel } from "../services/watch-config.js";
+import { findWatchedChannel, getResolvedChannels } from "../services/watch-config.js";
+import { CHECK_INTERVAL_MS } from "../config.js";
 import {
   sendNotification,
   sendPhotoNotification,
   sendAlbumNotification,
 } from "../services/notification.js";
 import { MessageStats } from "../types/index.js";
+
+// Max posts fetched per channel per poll
+const POLL_BATCH_LIMIT = 100;
 
 async function downloadAlbumPhotos(
   client: TelegramClient,
@@ -98,6 +102,70 @@ function buildMessageLink(channelEntity: Api.Channel, messageId: number): string
     : `https://t.me/c/${channelEntity.id.toString()}/${messageId}`;
 }
 
+// Highest message id already handled per channel, shared by the event handler and the
+// poller so each post is notified once
+const lastProcessedIds = new Map<string, number>();
+
+async function processChannelMessage(
+  client: TelegramClient,
+  message: Api.Message,
+  watched: { name: string; entity: Api.Channel },
+  stats: MessageStats,
+  source: "event" | "poll"
+): Promise<void> {
+  const { name: channelName, entity: channelEntity } = watched;
+  const channelKey = channelEntity.id.toString();
+  if (message.id <= (lastProcessedIds.get(channelKey) ?? 0)) return;
+  lastProcessedIds.set(channelKey, message.id);
+
+  if (!message.message) return;
+
+  stats.messageCount++;
+  const messageText = message.message;
+  const channelTitle = channelEntity.title || channelName;
+
+  log("INFO", `New message received from ${channelTitle}`, {
+    source,
+    messageId: message.id,
+    textPreview:
+      messageText.substring(0, 100) +
+      (messageText.length > 100 ? "..." : ""),
+    textLength: messageText.length,
+    date: message.date
+      ? new Date(message.date * 1000).toISOString()
+      : "unknown",
+  });
+
+  const matchedKeywords = findMatchingKeywords(messageText);
+
+  if (matchedKeywords.length > 0) {
+    stats.matchCount++;
+    const messageLink = buildMessageLink(channelEntity, message.id);
+
+    log("INFO", `KEYWORD MATCH FOUND!`, {
+      channel: channelTitle,
+      matchedKeywords,
+      messageId: message.id,
+      link: messageLink,
+      totalMatches: stats.matchCount,
+    });
+
+    await handleNotification(
+      client,
+      message,
+      channelEntity,
+      channelTitle,
+      matchedKeywords,
+      messageLink
+    );
+  } else {
+    log("DEBUG", "No keywords matched in message", {
+      channel: channelTitle,
+      messageId: message.id,
+    });
+  }
+}
+
 export function setupMessageHandler(client: TelegramClient, stats: MessageStats): void {
   log("DEBUG", "Setting up NewMessage event handler");
 
@@ -106,62 +174,63 @@ export function setupMessageHandler(client: TelegramClient, stats: MessageStats)
   client.addEventHandler(
     async (event: NewMessageEvent) => {
       const message = event.message;
-      if (!message || !message.message) {
-        log("DEBUG", "Received event without message text, skipping");
-        return;
-      }
+      if (!message) return;
 
       const chatId = message.chatId?.toString();
       const watched = chatId ? findWatchedChannel(chatId) : undefined;
       if (!watched) return;
 
-      stats.messageCount++;
-      const { name: channelName, entity: channelEntity } = watched;
-      const messageText = message.message;
-      const channelTitle = channelEntity.title || channelName;
-
-      log("INFO", `New message received from ${channelTitle}`, {
-        messageId: message.id,
-        textPreview:
-          messageText.substring(0, 100) +
-          (messageText.length > 100 ? "..." : ""),
-        textLength: messageText.length,
-        date: message.date
-          ? new Date(message.date * 1000).toISOString()
-          : "unknown",
-      });
-
-      const matchedKeywords = findMatchingKeywords(messageText);
-
-      if (matchedKeywords.length > 0) {
-        stats.matchCount++;
-        const messageLink = buildMessageLink(channelEntity, message.id);
-
-        log("INFO", `KEYWORD MATCH FOUND!`, {
-          channel: channelTitle,
-          matchedKeywords,
-          messageId: message.id,
-          link: messageLink,
-          totalMatches: stats.matchCount,
-        });
-
-        await handleNotification(
-          client,
-          message,
-          channelEntity,
-          channelTitle,
-          matchedKeywords,
-          messageLink
-        );
-      } else {
-        log("DEBUG", "No keywords matched in message", {
-          channel: channelTitle,
-          messageId: message.id,
-        });
-      }
+      await processChannelMessage(client, message, watched, stats, "event");
     },
     new NewMessage({})
   );
 
   log("INFO", "Event handler registered successfully");
+}
+
+// Telegram does not reliably push updates for busy channels, so every channel is also
+// polled for posts newer than the last one handled
+async function pollChannels(client: TelegramClient, stats: MessageStats): Promise<void> {
+  for (const watched of getResolvedChannels()) {
+    const channelKey = watched.entity.id.toString();
+    try {
+      const lastId = lastProcessedIds.get(channelKey);
+      if (lastId === undefined) {
+        // First poll of this channel: start from its newest post, don't replay history
+        const [latest] = await client.getMessages(watched.entity, { limit: 1 });
+        lastProcessedIds.set(channelKey, latest?.id ?? 0);
+        continue;
+      }
+
+      const messages = await client.getMessages(watched.entity, {
+        minId: lastId,
+        limit: POLL_BATCH_LIMIT,
+      });
+      // getMessages returns newest first
+      for (const message of [...messages].reverse()) {
+        await processChannelMessage(client, message, watched, stats, "poll");
+      }
+    } catch (error) {
+      log("WARN", `Polling failed for channel: ${watched.name}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+export function startChannelPolling(client: TelegramClient, stats: MessageStats): void {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await pollChannels(client, stats);
+    } finally {
+      running = false;
+    }
+  };
+
+  void tick();
+  setInterval(tick, CHECK_INTERVAL_MS);
+  log("INFO", `Polling channels every ${CHECK_INTERVAL_MS / 1000}s`);
 }

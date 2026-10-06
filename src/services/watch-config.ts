@@ -34,11 +34,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Telegram only pushes new posts of channels the account has joined
+async function joinIfNeeded(telegramClient: TelegramClient, entity: Api.Channel): Promise<void> {
+  if (!(entity instanceof Api.Channel) || !entity.left) return;
+  try {
+    await telegramClient.invoke(new Api.channels.JoinChannel({ channel: entity }));
+    entity.left = false;
+    log("INFO", `Joined channel: ${entity.title}`, { username: entity.username });
+  } catch (error) {
+    log("WARN", `Could not join channel: ${entity.title}`, { error: errorMessage(error) });
+  }
+}
+
 async function resolveInto(channel: WatchedChannel): Promise<void> {
   if (!client) return;
   try {
     channel.entity = await resolveChannel(client, channel.name);
     channel.error = undefined;
+    await joinIfNeeded(client, channel.entity);
   } catch (error) {
     channel.error = errorMessage(error);
     log("ERROR", `Could not find channel: ${channel.name}`, { error: channel.error });
@@ -82,6 +95,12 @@ export function findWatchedChannel(
     (ch) => ch.entity && utils.getPeerId(ch.entity) === chatId
   );
   return channel?.entity ? { name: channel.name, entity: channel.entity } : undefined;
+}
+
+export function getResolvedChannels(): { name: string; entity: Api.Channel }[] {
+  return channels
+    .filter((ch): ch is WatchedChannel & { entity: Api.Channel } => ch.entity instanceof Api.Channel)
+    .map((ch) => ({ name: ch.name, entity: ch.entity }));
 }
 
 export function getWatchConfigView(): WatchConfigView {
