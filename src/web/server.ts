@@ -7,6 +7,7 @@ import {
   startLogin,
   submitInput,
   cancelLogin,
+  getAccount,
 } from "../services/telegram-auth.js";
 import { countActiveSubscribers, listSubscribers } from "../services/subscribers.js";
 import { LOGIN_PAGE_HTML } from "./login-page.js";
@@ -100,6 +101,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
       await (route === "DELETE /api/keywords" ? removeKeyword : removeChannel)(value);
       sendJson(res, 200, getWatchConfigView());
+      return;
+    }
+
+    case "GET /api/account": {
+      try {
+        const account = await getAccount();
+        sendJson(res, account ? 200 : 409, account ?? { error: "Not logged in" });
+      } catch (error) {
+        log("WARN", "Failed to fetch Telegram account", { error: String(error) });
+        sendJson(res, 502, { error: "Could not reach Telegram" });
+      }
       return;
     }
 

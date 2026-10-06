@@ -106,14 +106,42 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
 
     logged_in: (s) => '<h1 class="ok">Parser is running</h1>' +
       '<p class="muted">Logged in and watching for new messages.</p>' +
-      '<dl><dt>Account</dt><dd>' + esc(s.user) + '</dd>' +
+      '<dl><dt>Account</dt><dd>' + accountHtml() + '</dd>' +
       '<dt>Subscribers</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — view list</a></dd>' +
       '<dt>Watching</dt><dd><a href="/settings">Keywords &amp; channels</a></dd></dl>',
   };
 
+  // Telegram account the app is logged in as, fetched live once per page load
+  let account = { status: "idle" };
+  let lastState = null;
+
+  function accountHtml() {
+    if (account.status === "done") {
+      const a = account.data;
+      return esc(a.name || "—") +
+        (a.username ? ' <a href="https://t.me/' + encodeURIComponent(a.username) + '" target="_blank" rel="noopener">@' + esc(a.username) + '</a>' : '') +
+        '<div class="muted" style="margin:0;font-size:12px">' +
+        (a.phone ? '<a href="tel:' + esc(a.phone) + '">' + esc(a.phone) + '</a> · ' : '') + 'ID ' + esc(a.id) + '</div>';
+    }
+    if (account.status === "error") return '<span class="error">' + esc(account.error) + '</span>';
+    return '<span class="muted">Loading…</span>';
+  }
+
+  async function loadAccount() {
+    account = { status: "loading" };
+    try {
+      account = { status: "done", data: await api("/api/account") };
+    } catch (e) {
+      account = { status: "error", error: e.message };
+    }
+    if (lastState) render(lastState);
+  }
+
   function render(s) {
+    lastState = s;
+    if (s.status === "logged_in" && account.status === "idle") loadAccount();
     // Re-render only when something visible changes, so typing isn't interrupted
-    const key = JSON.stringify({ ...s, subscribers: s.status === "logged_in" ? s.subscribers : null });
+    const key = JSON.stringify({ ...s, subscribers: s.status === "logged_in" ? s.subscribers : null, account });
     if (key === renderedKey) return;
     renderedKey = key;
     app.innerHTML = (views[s.status] || views.connecting)(s);

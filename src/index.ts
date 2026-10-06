@@ -94,8 +94,8 @@ async function main(): Promise<void> {
   });
 
   const client = await createAndConnectClient();
-  const me = await logCurrentUser(client);
-  setLoggedIn([me.firstName, me.lastName].filter(Boolean).join(" ") + (me.username ? ` (@${me.username})` : ""));
+  await logCurrentUser(client);
+  setLoggedIn(client);
 
   await attachClient(client);
 

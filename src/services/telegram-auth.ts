@@ -19,7 +19,13 @@ export interface AuthState {
   qrDataUrl?: string;
   passwordHint?: string;
   error?: string;
-  user?: string;
+}
+
+export interface AccountInfo {
+  id: string;
+  name: string;
+  username?: string;
+  phone?: string;
 }
 
 interface PendingInput {
@@ -32,6 +38,7 @@ let pendingInput: PendingInput | null = null;
 let attemptId = 0;
 let activeClient: TelegramClient | null = null;
 let onLoginComplete: ((client: TelegramClient) => void) | null = null;
+let loggedInClient: TelegramClient | null = null;
 
 export function createClient(session = ""): TelegramClient {
   const client = new TelegramClient(new StringSession(session), API_ID, API_HASH, {
@@ -46,8 +53,22 @@ export function getAuthState(): AuthState {
   return state;
 }
 
-export function setLoggedIn(user: string): void {
-  state = { status: "logged_in", user };
+export function setLoggedIn(client: TelegramClient): void {
+  loggedInClient = client;
+  state = { status: "logged_in" };
+}
+
+// Fetched live from Telegram, so the UI always shows the account the app is actually using
+export async function getAccount(): Promise<AccountInfo | null> {
+  if (!loggedInClient) return null;
+  const me = await loggedInClient.getMe();
+  return {
+    id: me.id.toString(),
+    name: [me.firstName, me.lastName].filter(Boolean).join(" "),
+    username: me.username,
+    // Telegram returns the number without the leading "+"
+    phone: me.phone ? `+${me.phone}` : undefined,
+  };
 }
 
 export function waitForWebLogin(): Promise<TelegramClient> {
