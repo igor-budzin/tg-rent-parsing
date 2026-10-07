@@ -124,8 +124,8 @@ function toQrUrl(token: Buffer): string {
 }
 
 export function startLogin(method: "qr" | "phone", phone?: string): string | null {
-  if (state.status !== "needs_login") return "Login is not available right now";
-  if (method === "phone" && !phone) return "Phone number is required";
+  if (state.status !== "needs_login") return "Вхід зараз недоступний";
+  if (method === "phone" && !phone) return "Потрібен номер телефону";
 
   const id = ++attemptId;
   state = { status: method === "qr" ? "qr" : "connecting" };

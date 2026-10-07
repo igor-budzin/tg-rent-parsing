@@ -1,9 +1,9 @@
 export const SETTINGS_PAGE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="uk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Parser Settings</title>
+<title>Налаштування парсера</title>
 <style>
   :root {
     --bg: #f4f5f7; --card: #fff; --text: #1c1e21; --muted: #65676b; --border: #dadde1;
@@ -70,27 +70,27 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
 <body>
 <main>
   <header>
-    <h1>Parser settings</h1>
-    <nav><a href="/">Status</a><a href="/subscribers">Subscribers</a></nav>
+    <h1>Налаштування парсера</h1>
+    <nav><a href="/">Статус</a><a href="/subscribers">Підписники</a></nav>
   </header>
-  <p class="intro">Changes apply immediately, no restart needed.</p>
+  <p class="intro">Зміни застосовуються одразу, перезапуск не потрібен.</p>
   <div class="grid">
     <section class="card">
-      <h2>Keywords</h2>
-      <p class="hint">A message matches if it contains any keyword (case-insensitive). Paste several separated by commas.</p>
+      <h2>Ключові слова</h2>
+      <p class="hint">Повідомлення підходить, якщо містить будь-яке ключове слово (регістр не важливий). Можна вставити кілька через кому.</p>
       <form data-kind="keywords">
-        <input name="value" placeholder="e.g. оболонь" aria-label="New keyword" required>
-        <button class="add" type="submit">Add</button>
+        <input name="value" placeholder="напр. оболонь" aria-label="Нове ключове слово" required>
+        <button class="add" type="submit">Додати</button>
       </form>
       <p class="error" data-error="keywords"></p>
       <div class="chips" id="keywords"></div>
     </section>
     <section class="card">
-      <h2>Channels</h2>
-      <p class="hint">Username, t.me link or numeric ID. The logged-in account should be a member to receive new posts.</p>
+      <h2>Канали</h2>
+      <p class="hint">Юзернейм, посилання t.me або числовий ID. Щоб отримувати нові пости, акаунт має бути учасником каналу.</p>
       <form data-kind="channels">
-        <input name="value" placeholder="e.g. orenda_kvatir" aria-label="New channel" required>
-        <button class="add" type="submit">Add</button>
+        <input name="value" placeholder="напр. orenda_kvatir" aria-label="Новий канал" required>
+        <button class="add" type="submit">Додати</button>
       </form>
       <p class="error" data-error="channels"></p>
       <ul id="channels"></ul>
@@ -117,9 +117,9 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
     document.getElementById("keywords").innerHTML = config.keywords.length
       ? config.keywords.map((k) =>
           '<span class="chip"><span>' + esc(k) + '</span>' +
-          '<button class="remove" data-kind="keywords" data-value="' + esc(k) + '" aria-label="Remove ' + esc(k) + '">×</button></span>'
+          '<button class="remove" data-kind="keywords" data-value="' + esc(k) + '" aria-label="Видалити ' + esc(k) + '">×</button></span>'
         ).join("")
-      : '<p class="empty">No keywords — nothing will match.</p>';
+      : '<p class="empty">Немає ключових слів — жодне повідомлення не підійде.</p>';
 
     document.getElementById("channels").innerHTML = config.channels.length
       ? config.channels.map((c) => {
@@ -132,10 +132,10 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
             : '<span class="avatar" aria-hidden="true">' + initial + '</span>';
           return '<li>' + avatar + '<div class="channel"><div class="title">' + (c.title ? esc(c.title) : esc(c.name)) + '</div>' +
             '<div class="name">' + link + '</div></div>' +
-            (c.error ? '<span class="badge" title="' + esc(c.error) + '">Not found</span>' : '') +
-            '<button class="remove" data-kind="channels" data-value="' + esc(c.name) + '" aria-label="Remove ' + esc(c.name) + '">×</button></li>';
+            (c.error ? '<span class="badge" title="' + esc(c.error) + '">Не знайдено</span>' : '') +
+            '<button class="remove" data-kind="channels" data-value="' + esc(c.name) + '" aria-label="Видалити ' + esc(c.name) + '">×</button></li>';
         }).join("")
-      : '<li class="empty">No channels — nothing is being watched.</li>';
+      : '<li class="empty">Немає каналів — нічого не відстежується.</li>';
   }
 
   // Missing or broken photo: fall back to the first letter
@@ -193,7 +193,7 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
     }
   });
 
-  api("GET", "/api/settings").then(render).catch((err) => showError("keywords", "Could not load settings: " + err.message));
+  api("GET", "/api/settings").then(render).catch((err) => showError("keywords", "Не вдалося завантажити налаштування: " + err.message));
 </script>
 </body>
 </html>`;

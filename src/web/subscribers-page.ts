@@ -1,9 +1,9 @@
 export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="uk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bot Subscribers</title>
+<title>Підписники бота</title>
 <style>
   :root {
     --bg: #f4f5f7; --card: #fff; --text: #1c1e21; --muted: #65676b;
@@ -48,14 +48,14 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
 <body>
 <main>
   <header>
-    <h1>Bot subscribers</h1>
-    <nav><a href="/">Status</a><a href="/settings">Settings</a></nav>
+    <h1>Підписники бота</h1>
+    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a></nav>
   </header>
-  <p class="summary" id="summary">Loading…</p>
-  <div class="filters" role="group" aria-label="Filter subscribers">
-    <button data-filter="all" aria-pressed="true">All</button>
-    <button data-filter="active" aria-pressed="false">Active</button>
-    <button data-filter="inactive" aria-pressed="false">Unsubscribed</button>
+  <p class="summary" id="summary">Завантаження…</p>
+  <div class="filters" role="group" aria-label="Фільтр підписників">
+    <button data-filter="all" aria-pressed="true">Усі</button>
+    <button data-filter="active" aria-pressed="false">Активні</button>
+    <button data-filter="inactive" aria-pressed="false">Відписані</button>
   </div>
   <div class="table-wrap" id="list"></div>
 </main>
@@ -70,7 +70,7 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
   }
 
   function formatDate(iso) {
-    return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
+    return iso ? new Date(iso).toLocaleString("uk-UA", { dateStyle: "medium", timeStyle: "short" }) : "—";
   }
 
   function row(s) {
@@ -80,8 +80,8 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
       ? '<a href="https://t.me/' + encodeURIComponent(s.username) + '" target="_blank" rel="noopener">@' + esc(s.username) + '</a>'
       : '<span class="muted">—</span>';
     const status = s.active
-      ? '<span class="badge on">Active</span>'
-      : '<span class="badge off">Unsubscribed</span>';
+      ? '<span class="badge on">Активний</span>'
+      : '<span class="badge off">Відписався</span>';
     return '<tr><td>' + name +
       '</td><td>' + username +
       '</td><td class="mono">' + esc(s.chatId) +
@@ -92,13 +92,13 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
 
   function render() {
     const active = subscribers.filter((s) => s.active).length;
-    summary.textContent = active + " active · " + (subscribers.length - active) + " unsubscribed · " + subscribers.length + " total";
+    summary.textContent = "Активні: " + active + " · Відписані: " + (subscribers.length - active) + " · Усього: " + subscribers.length;
 
     const shown = subscribers.filter((s) => filter === "all" || (filter === "active") === s.active);
     list.innerHTML = shown.length === 0
-      ? '<div class="empty">No subscribers yet. Users subscribe by sending /start to the bot.</div>'
-      : '<table><thead><tr><th>Name</th><th>Username</th><th>Chat ID</th><th>Status</th>' +
-        '<th>Subscribed</th><th>Unsubscribed</th></tr></thead><tbody>' + shown.map(row).join("") + '</tbody></table>';
+      ? '<div class="empty">Підписників поки немає. Щоб підписатися, користувач надсилає боту /start.</div>'
+      : '<table><thead><tr><th>Імʼя</th><th>Юзернейм</th><th>ID чату</th><th>Статус</th>' +
+        '<th>Підписався</th><th>Відписався</th></tr></thead><tbody>' + shown.map(row).join("") + '</tbody></table>';
   }
 
   document.querySelector(".filters").addEventListener("click", (e) => {
@@ -116,7 +116,7 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
       subscribers = await res.json();
       render();
     } catch (e) {
-      summary.textContent = "Could not load subscribers: " + e.message;
+      summary.textContent = "Не вдалося завантажити підписників: " + e.message;
     }
   }
 

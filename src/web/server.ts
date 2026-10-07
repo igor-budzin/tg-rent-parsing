@@ -87,7 +87,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return null;
       });
       if (!photo) {
-        sendJson(res, 404, { error: "No photo" });
+        sendJson(res, 404, { error: "Немає фото" });
         return;
       }
       // The URL carries the photo id, so a changed photo gets a new URL
@@ -100,7 +100,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "POST /api/channels": {
       const { value } = await readJson(req);
       if (typeof value !== "string") {
-        sendJson(res, 400, { error: "Value is required" });
+        sendJson(res, 400, { error: "Потрібно вказати значення" });
         return;
       }
       const add = route === "POST /api/keywords" ? addKeyword : addChannel;
@@ -113,7 +113,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "DELETE /api/channels": {
       const { value } = await readJson(req);
       if (typeof value !== "string") {
-        sendJson(res, 400, { error: "Value is required" });
+        sendJson(res, 400, { error: "Потрібно вказати значення" });
         return;
       }
       await (route === "DELETE /api/keywords" ? removeKeyword : removeChannel)(value);
@@ -124,10 +124,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "GET /api/account": {
       try {
         const account = await getAccount();
-        sendJson(res, account ? 200 : 409, account ?? { error: "Not logged in" });
+        sendJson(res, account ? 200 : 409, account ?? { error: "Вхід не виконано" });
       } catch (error) {
         log("WARN", "Failed to fetch Telegram account", { error: String(error) });
-        sendJson(res, 502, { error: "Could not reach Telegram" });
+        sendJson(res, 502, { error: "Не вдалося звʼязатися з Telegram" });
       }
       return;
     }
@@ -141,7 +141,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "POST /api/login": {
       const { method, phone } = await readJson(req);
       if (method !== "qr" && method !== "phone") {
-        sendJson(res, 400, { error: "Unknown login method" });
+        sendJson(res, 400, { error: "Невідомий спосіб входу" });
         return;
       }
       const error = startLogin(method, typeof phone === "string" ? phone.trim() : undefined);
@@ -152,7 +152,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "POST /api/submit": {
       const { value } = await readJson(req);
       const ok = typeof value === "string" && submitInput(value.trim());
-      sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: "Nothing to submit" });
+      sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: "Немає чого надсилати" });
       return;
     }
 
@@ -170,7 +170,7 @@ export function startWebServer(): void {
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
       log("ERROR", "Web request failed", { url: req.url, error: String(error) });
-      if (!res.headersSent) sendJson(res, 500, { error: "Internal error" });
+      if (!res.headersSent) sendJson(res, 500, { error: "Внутрішня помилка" });
     });
   });
 

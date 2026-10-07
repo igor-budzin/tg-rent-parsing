@@ -136,9 +136,9 @@ export async function getChannelPhoto(name: string): Promise<Buffer | null> {
 
 export async function addKeyword(input: string): Promise<string | null> {
   const keyword = input.trim();
-  if (!keyword) return "Keyword is empty";
+  if (!keyword) return "Ключове слово порожнє";
   if (keywords.some((k) => k.toLowerCase() === keyword.toLowerCase())) {
-    return "Keyword already exists";
+    return "Таке ключове слово вже є";
   }
   await pool.query("INSERT INTO keywords (keyword) VALUES ($1) ON CONFLICT DO NOTHING", [keyword]);
   keywords = [...keywords, keyword];
@@ -154,15 +154,15 @@ export async function removeKeyword(keyword: string): Promise<void> {
 
 export async function addChannel(input: string): Promise<string | null> {
   const name = normalizeChannelName(input);
-  if (!name) return "Channel is empty";
+  if (!name) return "Канал не вказано";
   if (channels.some((ch) => ch.name.toLowerCase() === name.toLowerCase())) {
-    return "Channel already exists";
+    return "Такий канал уже є";
   }
 
   const channel: WatchedChannel = { name };
   if (client) {
     await resolveInto(channel);
-    if (channel.error) return `Channel not found: ${channel.error}`;
+    if (channel.error) return `Канал не знайдено: ${channel.error}`;
   }
 
   await pool.query("INSERT INTO channels (name) VALUES ($1) ON CONFLICT DO NOTHING", [name]);

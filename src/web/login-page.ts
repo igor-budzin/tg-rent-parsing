@@ -1,9 +1,9 @@
 export const LOGIN_PAGE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="uk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rent Parser Login</title>
+<title>Вхід — Парсер оренди</title>
 <style>
   :root {
     --bg: #f4f5f7; --card: #fff; --text: #1c1e21; --muted: #65676b;
@@ -49,7 +49,7 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-<main class="card" id="app"><p class="muted">Loading…</p></main>
+<main class="card" id="app"><p class="muted">Завантаження…</p></main>
 <script>
   const app = document.getElementById("app");
   let renderedKey = "";
@@ -73,42 +73,42 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
   }
 
   const views = {
-    connecting: (s) => '<h1>Connecting…</h1><p class="muted">Talking to Telegram, one moment.</p>' + errorHtml(s),
+    connecting: (s) => '<h1>Підключення…</h1><p class="muted">Зʼєднуємося з Telegram, зачекайте.</p>' + errorHtml(s),
 
-    needs_login: (s) => '<h1>Log in to Telegram</h1>' +
-      '<p class="muted">The parser needs a Telegram account to read channels.</p>' + errorHtml(s) +
-      '<button data-action="qr">Log in with QR code</button>' +
-      '<div class="divider">or</div>' +
-      '<form data-form="phone"><label for="phone">Phone number</label>' +
+    needs_login: (s) => '<h1>Вхід у Telegram</h1>' +
+      '<p class="muted">Парсеру потрібен акаунт Telegram, щоб читати канали.</p>' + errorHtml(s) +
+      '<button data-action="qr">Увійти за QR-кодом</button>' +
+      '<div class="divider">або</div>' +
+      '<form data-form="phone"><label for="phone">Номер телефону</label>' +
       '<input id="phone" name="value" type="tel" placeholder="+380XXXXXXXXX" required autocomplete="tel">' +
-      '<button type="submit">Send code</button></form>',
+      '<button type="submit">Надіслати код</button></form>',
 
-    qr: (s) => '<h1>Scan QR code</h1>' +
-      '<p class="muted">Telegram app → Settings → Devices → Link Desktop Device. The code refreshes every 30s.</p>' +
+    qr: (s) => '<h1>Відскануйте QR-код</h1>' +
+      '<p class="muted">Telegram → Налаштування → Пристрої → Підключити пристрій. Код оновлюється кожні 30 с.</p>' +
       errorHtml(s) +
-      (s.qrDataUrl ? '<img class="qr" alt="Telegram login QR code" src="' + s.qrDataUrl + '">' : '<p class="muted">Generating QR code…</p>') +
-      '<button class="secondary" data-action="cancel">Cancel</button>',
+      (s.qrDataUrl ? '<img class="qr" alt="QR-код для входу в Telegram" src="' + s.qrDataUrl + '">' : '<p class="muted">Створюємо QR-код…</p>') +
+      '<button class="secondary" data-action="cancel">Скасувати</button>',
 
-    code: (s) => '<h1>Enter login code</h1>' +
-      '<p class="muted">Telegram sent a code to your app or by SMS.</p>' + errorHtml(s) +
-      '<form data-form="submit"><label for="code">Code</label>' +
+    code: (s) => '<h1>Введіть код входу</h1>' +
+      '<p class="muted">Telegram надіслав код у застосунок або SMS.</p>' + errorHtml(s) +
+      '<form data-form="submit"><label for="code">Код</label>' +
       '<input id="code" name="value" inputmode="numeric" autocomplete="one-time-code" required autofocus>' +
-      '<button type="submit">Log in</button></form>' +
-      '<button class="secondary" data-action="cancel">Cancel</button>',
+      '<button type="submit">Увійти</button></form>' +
+      '<button class="secondary" data-action="cancel">Скасувати</button>',
 
-    password: (s) => '<h1>Two-step verification</h1>' +
-      '<p class="muted">' + (s.passwordHint ? "Hint: " + esc(s.passwordHint) : "Enter your cloud password.") + '</p>' +
+    password: (s) => '<h1>Двоетапна перевірка</h1>' +
+      '<p class="muted">' + (s.passwordHint ? "Підказка: " + esc(s.passwordHint) : "Введіть хмарний пароль.") + '</p>' +
       errorHtml(s) +
-      '<form data-form="submit"><label for="password">Password</label>' +
+      '<form data-form="submit"><label for="password">Пароль</label>' +
       '<input id="password" name="value" type="password" autocomplete="current-password" required autofocus>' +
-      '<button type="submit">Log in</button></form>' +
-      '<button class="secondary" data-action="cancel">Cancel</button>',
+      '<button type="submit">Увійти</button></form>' +
+      '<button class="secondary" data-action="cancel">Скасувати</button>',
 
-    logged_in: (s) => '<h1 class="ok">Parser is running</h1>' +
-      '<p class="muted">Logged in and watching for new messages.</p>' +
-      '<dl><dt>Account</dt><dd>' + accountHtml() + '</dd>' +
-      '<dt>Subscribers</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — view list</a></dd>' +
-      '<dt>Watching</dt><dd><a href="/settings">Keywords &amp; channels</a></dd></dl>',
+    logged_in: (s) => '<h1 class="ok">Парсер працює</h1>' +
+      '<p class="muted">Вхід виконано, стежимо за новими повідомленнями.</p>' +
+      '<dl><dt>Акаунт</dt><dd>' + accountHtml() + '</dd>' +
+      '<dt>Підписники</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — переглянути список</a></dd>' +
+      '<dt>Відстеження</dt><dd><a href="/settings">Ключові слова й канали</a></dd></dl>',
   };
 
   // Telegram account the app is logged in as, fetched live once per page load
@@ -124,7 +124,7 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
         (a.phone ? '<a href="tel:' + esc(a.phone) + '">' + esc(a.phone) + '</a> · ' : '') + 'ID ' + esc(a.id) + '</div>';
     }
     if (account.status === "error") return '<span class="error">' + esc(account.error) + '</span>';
-    return '<span class="muted">Loading…</span>';
+    return '<span class="muted">Завантаження…</span>';
   }
 
   async function loadAccount() {
