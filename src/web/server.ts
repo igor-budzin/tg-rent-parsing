@@ -19,6 +19,7 @@ import {
   removeKeyword,
   addChannel,
   removeChannel,
+  getChannelPhoto,
 } from "../services/watch-config.js";
 
 const MAX_BODY_BYTES = 10_000;
@@ -78,6 +79,22 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     case "GET /api/settings":
       sendJson(res, 200, getWatchConfigView());
       return;
+
+    case "GET /api/channels/photo": {
+      const name = new URL(req.url ?? "", "http://localhost").searchParams.get("name") ?? "";
+      const photo = await getChannelPhoto(name).catch((error) => {
+        log("WARN", "Failed to download channel photo", { channel: name, error: String(error) });
+        return null;
+      });
+      if (!photo) {
+        sendJson(res, 404, { error: "No photo" });
+        return;
+      }
+      // The URL carries the photo id, so a changed photo gets a new URL
+      res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=86400" });
+      res.end(photo);
+      return;
+    }
 
     case "POST /api/keywords":
     case "POST /api/channels": {

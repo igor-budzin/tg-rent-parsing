@@ -10,11 +10,13 @@ interface WatchedChannel {
   name: string;
   entity?: Api.Channel;
   error?: string;
+  // Small profile photo, downloaded lazily for the web UI; photoId tells when it's stale
+  photo?: { photoId: string; data: Buffer };
 }
 
 export interface WatchConfigView {
   keywords: string[];
-  channels: { name: string; title?: string; error?: string }[];
+  channels: { name: string; title?: string; photoId?: string; error?: string }[];
 }
 
 let keywords: string[] = [];
@@ -28,6 +30,10 @@ export function normalizeChannelName(input: string): string {
     .replace(/^(https?:\/\/)?(www\.)?(t\.me|telegram\.me)\//i, "")
     .replace(/^@/, "")
     .replace(/\/+$/, "");
+}
+
+function photoIdOf(entity: Api.Channel | undefined): string | undefined {
+  return entity?.photo instanceof Api.ChatPhoto ? entity.photo.photoId.toString() : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -109,9 +115,23 @@ export function getWatchConfigView(): WatchConfigView {
     channels: channels.map((ch) => ({
       name: ch.name,
       title: ch.entity?.title,
+      photoId: photoIdOf(ch.entity),
       error: ch.error,
     })),
   };
+}
+
+// Returns null when the channel is unknown, unresolved or has no photo
+export async function getChannelPhoto(name: string): Promise<Buffer | null> {
+  const channel = channels.find((ch) => ch.name.toLowerCase() === name.toLowerCase());
+  const photoId = photoIdOf(channel?.entity);
+  if (!client || !channel?.entity || !photoId) return null;
+  if (channel.photo?.photoId === photoId) return channel.photo.data;
+
+  const data = await client.downloadProfilePhoto(channel.entity, { isBig: false });
+  if (!Buffer.isBuffer(data) || data.length === 0) return null;
+  channel.photo = { photoId, data };
+  return data;
 }
 
 export async function addKeyword(input: string): Promise<string | null> {

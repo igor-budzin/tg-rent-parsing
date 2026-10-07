@@ -56,6 +56,10 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
   li:first-child { border-top: none; }
+  .avatar {
+    flex: none; width: 40px; height: 40px; border-radius: 50%; object-fit: cover;
+    display: grid; place-items: center; background: var(--chip); color: var(--accent); font-weight: 600;
+  }
   .channel { flex: 1; min-width: 0; }
   .channel .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .channel .name { font-size: 13px; color: var(--muted); }
@@ -121,13 +125,29 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
       ? config.channels.map((c) => {
           const link = /^-?\\d+$/.test(c.name) ? esc(c.name)
             : '<a href="https://t.me/' + encodeURIComponent(c.name) + '" target="_blank" rel="noopener">@' + esc(c.name) + '</a>';
-          return '<li><div class="channel"><div class="title">' + (c.title ? esc(c.title) : esc(c.name)) + '</div>' +
+          const initial = esc(Array.from(c.title || c.name)[0]?.toUpperCase());
+          const avatar = c.photoId
+            ? '<img class="avatar" alt="" loading="lazy" data-initial="' + initial + '" src="/api/channels/photo?name=' +
+              encodeURIComponent(c.name) + '&v=' + encodeURIComponent(c.photoId) + '">'
+            : '<span class="avatar" aria-hidden="true">' + initial + '</span>';
+          return '<li>' + avatar + '<div class="channel"><div class="title">' + (c.title ? esc(c.title) : esc(c.name)) + '</div>' +
             '<div class="name">' + link + '</div></div>' +
             (c.error ? '<span class="badge" title="' + esc(c.error) + '">Not found</span>' : '') +
             '<button class="remove" data-kind="channels" data-value="' + esc(c.name) + '" aria-label="Remove ' + esc(c.name) + '">×</button></li>';
         }).join("")
       : '<li class="empty">No channels — nothing is being watched.</li>';
   }
+
+  // Missing or broken photo: fall back to the first letter
+  document.addEventListener("error", (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.classList.contains("avatar")) return;
+    const span = document.createElement("span");
+    span.className = "avatar";
+    span.setAttribute("aria-hidden", "true");
+    span.textContent = img.dataset.initial || "";
+    img.replaceWith(span);
+  }, true);
 
   function showError(kind, message) {
     document.querySelector('[data-error="' + kind + '"]').textContent = message || "";
