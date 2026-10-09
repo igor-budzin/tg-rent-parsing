@@ -9,7 +9,8 @@ import {
   sendPhotoNotification,
   sendAlbumNotification,
 } from "../services/notification.js";
-import { MessageStats } from "../types/index.js";
+import { parsePost } from "../services/post-parser.js";
+import { MessageStats, ParsedPost } from "../types/index.js";
 
 // Max posts fetched per channel per poll
 const POLL_BATCH_LIMIT = 100;
@@ -39,6 +40,41 @@ async function downloadAlbumPhotos(
   return photoBuffers;
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+const PRICE_PERIODS = { month: " / міс.", day: " / доба" } as const;
+
+function formatParsedCaption(
+  parsed: ParsedPost,
+  channelTitle: string,
+  messageLink: string
+): string {
+  const lines: string[] = [];
+  if (parsed.type === "rent") lines.push("🏠 <b>ОРЕНДА</b>");
+  if (parsed.type === "sell") lines.push("🏷 <b>ПРОДАЖ</b>");
+  if (parsed.price) {
+    const { amount, currency, period } = parsed.price;
+    const formatted = amount.toLocaleString("uk-UA");
+    lines.push(
+      `💰 <b>Ціна:</b> ${formatted} ${escapeHtml(currency)}${period ? PRICE_PERIODS[period] ?? "" : ""}`
+    );
+  }
+  if (parsed.location) lines.push(`📍 <b>Локація:</b> ${escapeHtml(parsed.location)}`);
+  if (parsed.rooms) lines.push(`🚪 <b>Кімнат:</b> ${parsed.rooms}`);
+  if (parsed.area) lines.push(`📐 <b>Площа:</b> ${parsed.area.toLocaleString("uk-UA")} м²`);
+  if (parsed.floor !== null) {
+    const total = parsed.totalFloors ? `/${parsed.totalFloors}` : "";
+    lines.push(`🏢 <b>Поверх:</b> ${parsed.floor}${total}`);
+  }
+  if (parsed.contacts.length > 0) {
+    lines.push(`📞 <b>Контакти:</b> ${parsed.contacts.map(escapeHtml).join(", ")}`);
+  }
+
+  return `${lines.join("\n")}\n\n<b>Канал:</b> ${escapeHtml(channelTitle)}\n${messageLink}`;
+}
+
 async function handleNotification(
   client: TelegramClient,
   message: Api.Message,
@@ -47,7 +83,10 @@ async function handleNotification(
   matchedKeywords: string[],
   messageLink: string
 ): Promise<void> {
-  const caption = `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;
+  const parsed = await parsePost(message.message);
+  const caption = parsed
+    ? formatParsedCaption(parsed, channelTitle, messageLink)
+    : `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;
 
   const groupedId = message.groupedId;
 

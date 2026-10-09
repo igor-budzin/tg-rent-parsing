@@ -28,3 +28,7 @@ export const CHECK_INTERVAL_MS = parseInt(process.env.CHECK_INTERVAL_MS || "6000
 // Web UI for Telegram login (Railway sets PORT automatically)
 export const PORT = parseInt(process.env.PORT || "3000");
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+
+// Gemini (via its OpenAI-compatible API) for parsing matched posts. Empty key disables AI parsing.
+export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
