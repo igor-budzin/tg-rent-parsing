@@ -38,9 +38,21 @@ async function callBotApi<T>(method: string, body: Record<string, unknown>): Pro
   return data.result as T;
 }
 
-async function reply(chatId: number, text: string): Promise<void> {
+// Reply-keyboard buttons; pressing one sends its label as a plain text message
+const START_BUTTON = "▶️ Підписатися";
+const STOP_BUTTON = "⏹ Зупинити";
+
+function keyboardWith(button: string) {
+  return { keyboard: [[{ text: button }]], resize_keyboard: true, is_persistent: true };
+}
+
+async function reply(chatId: number, text: string, button: string): Promise<void> {
   try {
-    await callBotApi("sendMessage", { chat_id: chatId, text });
+    await callBotApi("sendMessage", {
+      chat_id: chatId,
+      text,
+      reply_markup: keyboardWith(button),
+    });
   } catch (error) {
     log("ERROR", "Failed to reply to bot command", { chatId, error: String(error) });
   }
@@ -59,10 +71,11 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.text || message.chat.type !== "private") return;
 
-  const command = message.text.trim().split(/[\s@]/)[0].toLowerCase();
+  const text = message.text.trim();
+  const command = text.split(/[\s@]/)[0].toLowerCase();
   const chatId = message.chat.id;
 
-  if (command === "/start") {
+  if (command === "/start" || text === START_BUTTON) {
     await addSubscriber({
       chatId: String(chatId),
       username: message.from?.username,
@@ -70,11 +83,19 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
       lastName: message.from?.last_name,
     });
     log("INFO", "User subscribed", { chatId, username: message.from?.username });
-    await reply(chatId, "You are subscribed to rent notifications. Send /stop to unsubscribe.");
-  } else if (command === "/stop") {
+    await reply(
+      chatId,
+      `Ви підписані на сповіщення про оренду. Натисніть «${STOP_BUTTON}», щоб відписатися.`,
+      STOP_BUTTON
+    );
+  } else if (command === "/stop" || text === STOP_BUTTON) {
     await removeSubscriber(String(chatId));
     log("INFO", "User unsubscribed", { chatId, username: message.from?.username });
-    await reply(chatId, "You are unsubscribed. Send /start to subscribe again.");
+    await reply(
+      chatId,
+      `Ви відписані від сповіщень. Натисніть «${START_BUTTON}», щоб підписатися знову.`,
+      START_BUTTON
+    );
   }
 }
 

@@ -50,6 +50,11 @@ export async function countActiveSubscribers(): Promise<number> {
   return parseInt(result.rows[0].count);
 }
 
+export async function hasActiveSubscribers(): Promise<boolean> {
+  const result = await pool.query("SELECT 1 FROM subscribers WHERE active LIMIT 1");
+  return result.rows.length > 0;
+}
+
 export async function listSubscribers(): Promise<Subscriber[]> {
   const result = await pool.query<{
     chat_id: string;

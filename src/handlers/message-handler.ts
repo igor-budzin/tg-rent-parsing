@@ -10,6 +10,7 @@ import {
   sendAlbumNotification,
 } from "../services/notification.js";
 import { parsePost } from "../services/post-parser.js";
+import { hasActiveSubscribers } from "../services/subscribers.js";
 import { MessageStats, ParsedPost } from "../types/index.js";
 
 // Max posts fetched per channel per poll
@@ -145,6 +146,32 @@ function buildMessageLink(channelEntity: Api.Channel, messageId: number): string
 // poller so each post is notified once
 const lastProcessedIds = new Map<string, number>();
 
+// Channels are only watched while someone is subscribed to the bot
+let paused = false;
+
+async function isWatching(): Promise<boolean> {
+  let watching: boolean;
+  try {
+    watching = await hasActiveSubscribers();
+  } catch (error) {
+    log("WARN", "Could not check subscribers, keeping current watch state", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return !paused;
+  }
+  if (watching === paused) {
+    paused = !watching;
+    log("INFO", watching
+      ? "Subscriber present, resuming channel watching"
+      : "No active subscribers, pausing channel watching");
+  }
+  if (!watching) {
+    // Forget progress so posts published while paused are not replayed on resume
+    lastProcessedIds.clear();
+  }
+  return watching;
+}
+
 async function processChannelMessage(
   client: TelegramClient,
   message: Api.Message,
@@ -218,6 +245,7 @@ export function setupMessageHandler(client: TelegramClient, stats: MessageStats)
       const chatId = message.chatId?.toString();
       const watched = chatId ? findWatchedChannel(chatId) : undefined;
       if (!watched) return;
+      if (!(await isWatching())) return;
 
       await processChannelMessage(client, message, watched, stats, "event");
     },
@@ -230,6 +258,8 @@ export function setupMessageHandler(client: TelegramClient, stats: MessageStats)
 // Telegram does not reliably push updates for busy channels, so every channel is also
 // polled for posts newer than the last one handled
 async function pollChannels(client: TelegramClient, stats: MessageStats): Promise<void> {
+  if (!(await isWatching())) return;
+
   for (const watched of getResolvedChannels()) {
     const channelKey = watched.entity.id.toString();
     try {
