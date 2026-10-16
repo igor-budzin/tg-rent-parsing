@@ -25,6 +25,14 @@ export async function initDb(): Promise<void> {
     )
   `);
   await initWatchSettingsTables();
+  // Other filter settings edited from the web UI, one JSON value per key
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   log("DEBUG", "Database tables ready");
 }
 

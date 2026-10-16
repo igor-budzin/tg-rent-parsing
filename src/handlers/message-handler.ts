@@ -2,7 +2,13 @@ import { TelegramClient, Api } from "telegram";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { log } from "../utils/logger.js";
 import { findMatchingKeywords } from "../utils/keywords.js";
-import { findWatchedChannel, getResolvedChannels } from "../services/watch-config.js";
+import {
+  findWatchedChannel,
+  getResolvedChannels,
+  roomsMatch,
+  floorMatches,
+  priceMatches,
+} from "../services/watch-config.js";
 import { CHECK_INTERVAL_MS } from "../config.js";
 import {
   sendNotification,
@@ -84,7 +90,22 @@ async function handleNotification(
   matchedKeywords: string[],
   messageLink: string
 ): Promise<void> {
+  // Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
   const parsed = await parsePost(message.message);
+  if (
+    parsed &&
+    (!roomsMatch(parsed.rooms) || !floorMatches(parsed.floor) || !(await priceMatches(parsed.price)))
+  ) {
+    log("INFO", "Post skipped: doesn't fit the room/floor/price filter", {
+      channel: channelTitle,
+      messageId: message.id,
+      rooms: parsed.rooms,
+      floor: parsed.floor,
+      price: parsed.price,
+    });
+    return;
+  }
+
   const caption = parsed
     ? formatParsedCaption(parsed, channelTitle, messageLink)
     : `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;

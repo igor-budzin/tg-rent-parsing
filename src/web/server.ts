@@ -20,6 +20,9 @@ import {
   addChannel,
   removeChannel,
   getChannelPhoto,
+  setRooms,
+  setFloor,
+  setPrice,
 } from "../services/watch-config.js";
 
 const MAX_BODY_BYTES = 10_000;
@@ -105,6 +108,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
       const add = route === "POST /api/keywords" ? addKeyword : addChannel;
       const error = await add(value);
+      sendJson(res, error ? 400 : 200, error ? { error } : getWatchConfigView());
+      return;
+    }
+
+    case "PUT /api/rooms":
+    case "PUT /api/floor":
+    case "PUT /api/price": {
+      const { value } = await readJson(req);
+      const set = { "PUT /api/rooms": setRooms, "PUT /api/floor": setFloor, "PUT /api/price": setPrice }[route];
+      const error = await set(value);
       sendJson(res, error ? 400 : 200, error ? { error } : getWatchConfigView());
       return;
     }
