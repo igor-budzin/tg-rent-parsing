@@ -13,6 +13,8 @@ import { countActiveSubscribers, listSubscribers } from "../services/subscribers
 import { LOGIN_PAGE_HTML } from "./login-page.js";
 import { SUBSCRIBERS_PAGE_HTML } from "./subscribers-page.js";
 import { SETTINGS_PAGE_HTML } from "./settings-page.js";
+import { FAILURES_PAGE_HTML } from "./failures-page.js";
+import { listParseFailures, clearParseFailures } from "../services/parse-failures.js";
 import {
   getWatchConfigView,
   addKeyword,
@@ -72,6 +74,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     case "GET /api/subscribers":
       sendJson(res, 200, await listSubscribers());
+      return;
+
+    case "GET /failures":
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(FAILURES_PAGE_HTML);
+      return;
+
+    case "GET /api/parse-failures":
+      sendJson(res, 200, await listParseFailures());
+      return;
+
+    case "DELETE /api/parse-failures":
+      await clearParseFailures();
+      sendJson(res, 200, { ok: true });
       return;
 
     case "GET /settings":

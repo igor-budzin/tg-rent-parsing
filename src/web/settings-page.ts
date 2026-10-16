@@ -80,7 +80,7 @@ export const SETTINGS_PAGE_HTML = `<!doctype html>
 <main>
   <header>
     <h1>Налаштування парсера</h1>
-    <nav><a href="/">Статус</a><a href="/subscribers">Підписники</a></nav>
+    <nav><a href="/">Статус</a><a href="/subscribers">Підписники</a><a href="/failures">Помилки AI</a></nav>
   </header>
   <p class="intro">Зміни застосовуються одразу, перезапуск не потрібен.</p>
   <div class="grid">

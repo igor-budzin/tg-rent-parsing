@@ -108,7 +108,8 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
       '<p class="muted">Вхід виконано, стежимо за новими повідомленнями.</p>' +
       '<dl><dt>Акаунт</dt><dd>' + accountHtml() + '</dd>' +
       '<dt>Підписники</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — переглянути список</a></dd>' +
-      '<dt>Відстеження</dt><dd><a href="/settings">Ключові слова й канали</a></dd></dl>',
+      '<dt>Відстеження</dt><dd><a href="/settings">Ключові слова й канали</a></dd>' +
+      '<dt>AI-розбір</dt><dd><a href="/failures">Журнал помилок</a></dd></dl>',
   };
 
   // Telegram account the app is logged in as, fetched live once per page load

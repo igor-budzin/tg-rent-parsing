@@ -91,7 +91,7 @@ async function handleNotification(
   messageLink: string
 ): Promise<void> {
   // Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
-  const parsed = await parsePost(message.message);
+  const parsed = await parsePost(message.message, { channel: channelTitle, messageLink });
   if (
     parsed &&
     (!roomsMatch(parsed.rooms) || !floorMatches(parsed.floor) || !(await priceMatches(parsed.price)))

@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { OPENROUTER_API_KEY, OPENROUTER_MODELS } from "../config.js";
 import { log } from "../utils/logger.js";
 import { ParsedPost } from "../types/index.js";
+import { recordParseFailure, ParseFailureReason, PostSource } from "./parse-failures.js";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // OpenRouter accepts at most this many models in one request's fallback list
@@ -127,11 +128,29 @@ function modelIndex(answered: string): number {
   return models.findIndex((m) => m === answered || m.replace(/:free$/, "") === answered);
 }
 
-async function requestParse(
-  ai: OpenAI,
-  text: string,
-  startIndex: number,
-): Promise<{ parsed: ParsedPost | null; model: string }> {
+interface ParseAttempt {
+  parsed: ParsedPost | null;
+  model: string;
+  chain: string[];
+  content: string | null;
+  // Why nothing was extracted, when parsed is null
+  reason: "empty_response" | "invalid_json" | "nothing_extracted" | null;
+  details: Record<string, unknown>;
+  durationMs: number;
+}
+
+// Thrown request errors keep the chain and timing for the failure log
+class RequestError extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly chain: string[],
+    readonly durationMs: number,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function requestParse(ai: OpenAI, text: string, startIndex: number): Promise<ParseAttempt> {
   const chain = models.slice(startIndex, startIndex + MAX_MODELS_PER_REQUEST);
   const params: OpenRouterParams = {
     model: chain[0],
@@ -143,19 +162,102 @@ async function requestParse(
     ],
     response_format: { type: "json_object" },
   };
-  const completion = await ai.chat.completions.create(params);
+  const startedAt = Date.now();
+  let completion: OpenAI.ChatCompletion;
+  try {
+    completion = await ai.chat.completions.create(params);
+  } catch (error) {
+    throw new RequestError(error, chain, Date.now() - startedAt);
+  }
+  const durationMs = Date.now() - startedAt;
 
-  const content = completion.choices[0]?.message?.content;
-  const parsed = content ? normalize(parseJson(content)) : null;
-  return { parsed, model: completion.model };
+  const choice = completion.choices[0];
+  const content = choice?.message?.content ?? null;
+  const json = content ? parseJson(content) : null;
+  const parsed = json ? normalize(json) : null;
+  const reason = parsed ? null : !content ? "empty_response" : !json ? "invalid_json" : "nothing_extracted";
+  const details = {
+    id: completion.id,
+    finishReason: choice?.finish_reason ?? null,
+    refusal: choice?.message?.refusal ?? null,
+    usage: completion.usage ?? null,
+    // OpenRouter adds the upstream provider name
+    provider: (completion as { provider?: string }).provider ?? null,
+  };
+  return { parsed, model: completion.model, chain, content, reason, details, durationMs };
 }
 
-// Returns null when AI is disabled, unavailable or extracted nothing — callers then send the raw post
-export async function parsePost(text: string): Promise<ParsedPost | null> {
+function recordEmptyAttempt(attempt: ParseAttempt, text: string, source: PostSource | undefined, willRetry: boolean) {
+  recordParseFailure({
+    reason: attempt.reason ?? "nothing_extracted",
+    models: attempt.chain,
+    model: attempt.model,
+    response: attempt.content,
+    details: attempt.details,
+    willRetry,
+    durationMs: attempt.durationMs,
+    postText: text,
+    source,
+  });
+}
+
+function recordRequestError(error: RequestError, text: string, source: PostSource | undefined): void {
+  const cause = error.cause;
+  const details: Record<string, unknown> = { errorType: cause instanceof Error ? cause.name : typeof cause };
+  let reason: ParseFailureReason = "error";
+  let status: number | null = null;
+
+  if (cause instanceof OpenAI.APIConnectionError) {
+    reason = "network";
+  } else if (cause instanceof OpenAI.APIError) {
+    reason = "api_error";
+    status = cause.status ?? null;
+    details.body = cause.error ?? null;
+    details.requestId = cause.requestID ?? null;
+    details.retryAfter = cause.headers?.get("retry-after") ?? null;
+  } else if (cause instanceof Error) {
+    details.stack = cause.stack ?? null;
+  }
+
+  recordParseFailure({
+    reason,
+    models: error.chain,
+    status,
+    error: error.message,
+    details,
+    durationMs: error.durationMs,
+    postText: text,
+    source,
+  });
+}
+
+// Returns null when AI is disabled, unavailable or extracted nothing — callers then send the raw post.
+// Every failure is saved for the failures page in the web UI.
+export async function parsePost(text: string, source?: PostSource): Promise<ParsedPost | null> {
   const ai = getClient();
-  if (!ai || Date.now() < cooldownUntil) return null;
+  if (!ai) return null;
+  if (Date.now() < cooldownUntil) {
+    recordParseFailure({
+      reason: "cooldown",
+      models,
+      error: "AI paused after rate limits or provider errors",
+      details: { resumesAt: new Date(cooldownUntil).toISOString() },
+      postText: text,
+      source,
+    });
+    return null;
+  }
   await (modelsChecked ??= checkModels());
-  if (models.length === 0) return null;
+  if (models.length === 0) {
+    recordParseFailure({
+      reason: "no_models",
+      models: OPENROUTER_MODELS,
+      error: "None of OPENROUTER_MODELS exist on OpenRouter",
+      postText: text,
+      source,
+    });
+    return null;
+  }
 
   try {
     const first = await requestParse(ai, text, 0);
@@ -167,23 +269,36 @@ export async function parsePost(text: string): Promise<ParsedPost | null> {
     // The model answered but extracted nothing — give the next model one more try
     const answeredIndex = modelIndex(first.model);
     const nextIndex = answeredIndex === -1 ? 1 : answeredIndex + 1;
-    if (nextIndex >= models.length) {
-      log("WARN", "AI extracted nothing", { model: first.model });
+    const willRetry = nextIndex < models.length;
+    recordEmptyAttempt(first, text, source, willRetry);
+    if (!willRetry) {
+      log("WARN", "AI extracted nothing", { model: first.model, reason: first.reason });
       return null;
     }
 
     log("WARN", "AI extracted nothing, retrying with next model", {
       model: first.model,
+      reason: first.reason,
       next: models[nextIndex],
     });
     const second = await requestParse(ai, text, nextIndex);
-    if (second.parsed) log("DEBUG", "Post parsed by AI", { model: second.model, parsed: second.parsed });
-    else log("WARN", "AI extracted nothing", { model: second.model });
+    if (second.parsed) {
+      log("DEBUG", "Post parsed by AI", { model: second.model, parsed: second.parsed });
+    } else {
+      recordEmptyAttempt(second, text, source, false);
+      log("WARN", "AI extracted nothing", { model: second.model, reason: second.reason });
+    }
     return second.parsed;
   } catch (error) {
-    if (error instanceof OpenAI.APIError && (error.status === 429 || (error.status ?? 0) >= 500)) {
-      startCooldown(error);
+    const cause = error instanceof RequestError ? error.cause : error;
+    if (cause instanceof OpenAI.APIError && (cause.status === 429 || (cause.status ?? 0) >= 500)) {
+      startCooldown(cause);
     }
+    recordRequestError(
+      error instanceof RequestError ? error : new RequestError(error, [], 0),
+      text,
+      source,
+    );
     log("WARN", "AI parsing failed, sending raw post", {
       error: error instanceof Error ? error.message : String(error),
     });

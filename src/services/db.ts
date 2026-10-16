@@ -1,6 +1,7 @@
 import pg from "pg";
 import { DATABASE_URL, ENV_CHANNELS, ENV_KEYWORDS } from "../config.js";
 import { log } from "../utils/logger.js";
+import { initParseFailuresTable } from "./parse-failures.js";
 
 export const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
@@ -33,6 +34,7 @@ export async function initDb(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await initParseFailuresTable();
   log("DEBUG", "Database tables ready");
 }
 
