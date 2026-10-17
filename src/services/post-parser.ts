@@ -49,6 +49,15 @@ function getClient(): OpenAI | null {
   return client;
 }
 
+export function isAiEnabled(): boolean {
+  return getClient() !== null;
+}
+
+// When AI requests resume after rate limits or outages; 0 when not paused
+export function aiPausedUntil(): number {
+  return Date.now() < cooldownUntil ? cooldownUntil : 0;
+}
+
 function startCooldown(error: InstanceType<typeof OpenAI.APIError>): void {
   const retryAfterSec = Number(error.headers?.get("retry-after"));
   const cooldownMs = retryAfterSec > 0 ? retryAfterSec * 1000 : DEFAULT_COOLDOWN_MS;
@@ -231,8 +240,8 @@ function recordRequestError(error: RequestError, text: string, source: PostSourc
   });
 }
 
-// Returns null when AI is disabled, unavailable or extracted nothing — callers then send the raw post.
-// Every failure is saved for the failures page in the web UI.
+// Returns null when AI is disabled, unavailable or extracted nothing — callers then queue the post
+// for a retry or send it raw. Every failure is saved for the failures page in the web UI.
 export async function parsePost(text: string, source?: PostSource): Promise<ParsedPost | null> {
   const ai = getClient();
   if (!ai) return null;
@@ -299,7 +308,7 @@ export async function parsePost(text: string, source?: PostSource): Promise<Pars
       text,
       source,
     );
-    log("WARN", "AI parsing failed, sending raw post", {
+    log("WARN", "AI parsing failed", {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;

@@ -137,7 +137,8 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
       : "";
     const outcome = f.willRetry
       ? "Повторна спроба з наступною моделлю"
-      : (f.reason === "cooldown" || f.reason === "no_models" ? "AI пропущено, " : "") + "пост надіслано без розбору";
+      : (f.reason === "cooldown" || f.reason === "no_models" ? "AI пропущено, " : "") +
+        (f.queued ? "пост у черзі на повторний розбір" : "пост надіслано без розбору");
 
     return '<details data-id="' + esc(f.id) + '"' + (open.has(f.id) ? " open" : "") + '>' +
       '<summary><span class="time">' + formatDate(f.createdAt) + '</span>' +
@@ -147,6 +148,7 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
         field("Час", esc(new Date(f.createdAt).toISOString())) +
         field("Причина", reasonBadge(f.reason) + ' <span class="mono muted">' + esc(f.reason) + '</span>') +
         field("Наслідок", esc(outcome)) +
+        field("Спроба з черги", f.attempt ? String(f.attempt) : null) +
         field("Відповіла модель", f.model ? '<span class="mono">' + esc(f.model) + '</span>' : null) +
         field("Ланцюжок моделей", f.models.length ? '<span class="mono">' + f.models.map(esc).join(" → ") + '</span>' : null) +
         field("HTTP-статус", f.status ? '<span class="mono">' + f.status + '</span>' : null) +

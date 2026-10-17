@@ -9,30 +9,33 @@ import {
   floorMatches,
   priceMatches,
 } from "../services/watch-config.js";
-import { CHECK_INTERVAL_MS } from "../config.js";
+import { CHECK_INTERVAL_MS, PARSE_RETRY_ATTEMPTS, PARSE_RETRY_DELAY_MS } from "../config.js";
 import {
   sendNotification,
   sendPhotoNotification,
   sendAlbumNotification,
 } from "../services/notification.js";
-import { parsePost } from "../services/post-parser.js";
+import { parsePost, isAiEnabled } from "../services/post-parser.js";
+import { enqueuePost } from "../services/parse-queue.js";
 import { hasActiveSubscribers } from "../services/subscribers.js";
 import { MessageStats, ParsedPost } from "../types/index.js";
 
 // Max posts fetched per channel per poll
 const POLL_BATCH_LIMIT = 100;
+// Telegram albums hold up to 10 media, posted as consecutive messages
+const MAX_ALBUM_SIZE = 10;
 
 async function downloadAlbumPhotos(
   client: TelegramClient,
   channelEntity: Api.Channel,
+  message: Api.Message,
   groupedId: Api.long
 ): Promise<Buffer[]> {
-  const messages = await client.getMessages(channelEntity, {
-    ids: undefined,
-    limit: 10,
-  });
+  // Look around the post itself, so older posts (retried from the parse queue) work too
+  const ids = Array.from({ length: MAX_ALBUM_SIZE * 2 - 1 }, (_, i) => message.id - MAX_ALBUM_SIZE + 1 + i);
+  const messages = await client.getMessages(channelEntity, { ids });
 
-  const albumMessages = messages.filter((m) => m.groupedId?.equals(groupedId));
+  const albumMessages = messages.filter((m) => m?.groupedId?.equals(groupedId));
   const photoBuffers: Buffer[] = [];
 
   for (const albumMsg of albumMessages) {
@@ -82,16 +85,16 @@ function formatParsedCaption(
   return `${lines.join("\n")}\n\n<b>Канал:</b> ${escapeHtml(channelTitle)}\n${messageLink}`;
 }
 
-async function handleNotification(
+// Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
+export async function deliverPost(
   client: TelegramClient,
   message: Api.Message,
   channelEntity: Api.Channel,
   channelTitle: string,
   matchedKeywords: string[],
-  messageLink: string
+  messageLink: string,
+  parsed: ParsedPost | null
 ): Promise<void> {
-  // Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
-  const parsed = await parsePost(message.message, { channel: channelTitle, messageLink });
   if (
     parsed &&
     (!roomsMatch(parsed.rooms) || !floorMatches(parsed.floor) || !(await priceMatches(parsed.price)))
@@ -117,6 +120,7 @@ async function handleNotification(
       const photoBuffers = await downloadAlbumPhotos(
         client,
         channelEntity,
+        message,
         groupedId
       );
 
@@ -154,6 +158,54 @@ async function handleNotification(
     }
   } else {
     await sendNotification(caption);
+  }
+}
+
+// A post the AI fails to parse goes to the parse queue and is retried later;
+// it's sent unparsed only when retries are off or the queue can't be written
+async function handleNotification(
+  client: TelegramClient,
+  message: Api.Message,
+  channelEntity: Api.Channel,
+  channelTitle: string,
+  matchedKeywords: string[],
+  messageLink: string
+): Promise<void> {
+  const deliver = (parsed: ParsedPost | null) =>
+    deliverPost(client, message, channelEntity, channelTitle, matchedKeywords, messageLink, parsed);
+
+  if (!isAiEnabled()) return deliver(null);
+
+  const queueOnFailure = PARSE_RETRY_ATTEMPTS > 0;
+  const parsed = await parsePost(message.message, {
+    channel: channelTitle,
+    messageLink,
+    attempt: 0,
+    queueOnFailure,
+  });
+  if (parsed || !queueOnFailure) return deliver(parsed);
+
+  try {
+    await enqueuePost(
+      {
+        channelId: channelEntity.id.toString(),
+        messageId: message.id,
+        channelTitle,
+        messageLink,
+        keywords: matchedKeywords,
+      },
+      PARSE_RETRY_DELAY_MS
+    );
+    log("INFO", "Post queued for another AI parse attempt", {
+      channel: channelTitle,
+      messageId: message.id,
+      retryInSec: PARSE_RETRY_DELAY_MS / 1000,
+    });
+  } catch (error) {
+    log("WARN", "Could not queue post for retry, sending raw", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await deliver(null);
   }
 }
 

@@ -39,3 +39,8 @@ export const OPENROUTER_MODELS: string[] = (
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
+
+// Posts the AI failed to parse are retried this many times before being sent unparsed
+export const PARSE_RETRY_ATTEMPTS = parseInt(process.env.PARSE_RETRY_ATTEMPTS || "3");
+// Delay before the first retry; doubles with each next one (default: 2 minutes)
+export const PARSE_RETRY_DELAY_MS = parseInt(process.env.PARSE_RETRY_DELAY_MS || "120000");

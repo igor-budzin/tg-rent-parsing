@@ -18,6 +18,10 @@ export type ParseFailureReason =
 export interface PostSource {
   channel?: string;
   messageLink?: string;
+  // 0 for the live attempt, 1+ for retries from the parse queue
+  attempt?: number;
+  // A failed parse puts the post in the retry queue instead of sending it raw
+  queueOnFailure?: boolean;
 }
 
 export interface ParseFailureInput {
@@ -43,6 +47,9 @@ export interface ParseFailure extends Omit<ParseFailureInput, "source"> {
   createdAt: string;
   channel: string | null;
   messageLink: string | null;
+  attempt: number;
+  // The post went to the retry queue
+  queued: boolean;
 }
 
 export async function initParseFailuresTable(): Promise<void> {
@@ -64,14 +71,16 @@ export async function initParseFailuresTable(): Promise<void> {
       post_text TEXT NOT NULL
     )
   `);
+  await pool.query("ALTER TABLE parse_failures ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 0");
+  await pool.query("ALTER TABLE parse_failures ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT FALSE");
 }
 
 async function insertParseFailure(failure: ParseFailureInput): Promise<void> {
   await pool.query(
     `INSERT INTO parse_failures
        (reason, models, model, status, error, response, details, will_retry, duration_ms,
-        channel, message_link, post_text)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        channel, message_link, post_text, attempt, queued)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       failure.reason,
       failure.models,
@@ -85,6 +94,8 @@ async function insertParseFailure(failure: ParseFailureInput): Promise<void> {
       failure.source?.channel ?? null,
       failure.source?.messageLink ?? null,
       failure.postText,
+      failure.source?.attempt ?? 0,
+      !failure.willRetry && (failure.source?.queueOnFailure ?? false),
     ]
   );
   await pool.query(
@@ -119,6 +130,8 @@ export async function listParseFailures(): Promise<ParseFailure[]> {
     channel: string | null;
     message_link: string | null;
     post_text: string;
+    attempt: number;
+    queued: boolean;
   }>("SELECT * FROM parse_failures ORDER BY id DESC");
   return result.rows.map((row) => ({
     id: row.id,
@@ -135,6 +148,8 @@ export async function listParseFailures(): Promise<ParseFailure[]> {
     channel: row.channel,
     messageLink: row.message_link,
     postText: row.post_text,
+    attempt: row.attempt,
+    queued: row.queued,
   }));
 }
 

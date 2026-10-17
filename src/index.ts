@@ -20,6 +20,7 @@ import {
 import { startWebServer } from "./web/server.js";
 import { startBotUpdatesPolling } from "./services/bot-updates.js";
 import { setupMessageHandler, startChannelPolling } from "./handlers/message-handler.js";
+import { startParseRetryQueue } from "./handlers/parse-retry.js";
 import { MessageStats } from "./types/index.js";
 
 function validateConfig(): void {
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
 
   setupMessageHandler(client, stats);
   startChannelPolling(client, stats);
+  startParseRetryQueue(client);
 
   log("INFO", "=".repeat(50));
   log("INFO", "NOW WATCHING FOR NEW MESSAGES...");
