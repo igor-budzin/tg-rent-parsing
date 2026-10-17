@@ -18,6 +18,7 @@ import {
 import { parsePost, isAiEnabled } from "../services/post-parser.js";
 import { enqueuePost } from "../services/parse-queue.js";
 import { hasActiveSubscribers } from "../services/subscribers.js";
+import { recordPostStat } from "../services/post-stats.js";
 import { MessageStats, ParsedPost } from "../types/index.js";
 
 // Max posts fetched per channel per poll
@@ -85,6 +86,36 @@ function formatParsedCaption(
   return `${lines.join("\n")}\n\n<b>Канал:</b> ${escapeHtml(channelTitle)}\n${messageLink}`;
 }
 
+// Sends the post's photos with the caption, falling back to a text message.
+// Returns whether at least one subscriber got it.
+async function sendPost(
+  client: TelegramClient,
+  message: Api.Message,
+  channelEntity: Api.Channel,
+  caption: string
+): Promise<boolean> {
+  const groupedId = message.groupedId;
+
+  if (groupedId) {
+    try {
+      const photoBuffers = await downloadAlbumPhotos(client, channelEntity, message, groupedId);
+      if (photoBuffers.length > 1 && (await sendAlbumNotification(photoBuffers, caption))) return true;
+      if (photoBuffers.length === 1 && (await sendPhotoNotification(photoBuffers[0], caption))) return true;
+    } catch (error) {
+      log("ERROR", "Failed to process album", { error });
+    }
+  } else if (message.photo) {
+    try {
+      const photoBuffer = (await client.downloadMedia(message, {})) as Buffer;
+      if (photoBuffer && (await sendPhotoNotification(photoBuffer, caption))) return true;
+    } catch (error) {
+      log("ERROR", "Failed to download/send photo", { error });
+    }
+  }
+
+  return sendNotification(caption);
+}
+
 // Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
 export async function deliverPost(
   client: TelegramClient,
@@ -106,6 +137,7 @@ export async function deliverPost(
       floor: parsed.floor,
       price: parsed.price,
     });
+    recordPostStat(channelTitle, "filtered_out");
     return;
   }
 
@@ -113,51 +145,8 @@ export async function deliverPost(
     ? formatParsedCaption(parsed, channelTitle, messageLink)
     : `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;
 
-  const groupedId = message.groupedId;
-
-  if (groupedId) {
-    try {
-      const photoBuffers = await downloadAlbumPhotos(
-        client,
-        channelEntity,
-        message,
-        groupedId
-      );
-
-      if (photoBuffers.length > 1) {
-        const success = await sendAlbumNotification(photoBuffers, caption);
-        if (!success) {
-          await sendNotification(caption);
-        }
-      } else if (photoBuffers.length === 1) {
-        const success = await sendPhotoNotification(photoBuffers[0], caption);
-        if (!success) {
-          await sendNotification(caption);
-        }
-      } else {
-        await sendNotification(caption);
-      }
-    } catch (error) {
-      log("ERROR", "Failed to process album", { error });
-      await sendNotification(caption);
-    }
-  } else if (message.photo) {
-    try {
-      const photoBuffer = (await client.downloadMedia(message, {})) as Buffer;
-      if (photoBuffer) {
-        const success = await sendPhotoNotification(photoBuffer, caption);
-        if (!success) {
-          await sendNotification(caption);
-        }
-      } else {
-        await sendNotification(caption);
-      }
-    } catch (error) {
-      log("ERROR", "Failed to download/send photo", { error });
-      await sendNotification(caption);
-    }
-  } else {
-    await sendNotification(caption);
+  if (await sendPost(client, message, channelEntity, caption)) {
+    recordPostStat(channelTitle, "sent");
   }
 }
 
@@ -262,6 +251,7 @@ async function processChannelMessage(
   stats.messageCount++;
   const messageText = message.message;
   const channelTitle = channelEntity.title || channelName;
+  recordPostStat(channelTitle, "checked");
 
   log("INFO", `New message received from ${channelTitle}`, {
     source,
@@ -279,6 +269,7 @@ async function processChannelMessage(
 
   if (matchedKeywords.length > 0) {
     stats.matchCount++;
+    recordPostStat(channelTitle, "matched");
     const messageLink = buildMessageLink(channelEntity, message.id);
 
     log("INFO", `KEYWORD MATCH FOUND!`, {

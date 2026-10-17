@@ -109,6 +109,7 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
       '<dl><dt>Акаунт</dt><dd>' + accountHtml() + '</dd>' +
       '<dt>Підписники</dt><dd><a href="/subscribers">' + (s.subscribers ?? "—") + ' — переглянути список</a></dd>' +
       '<dt>Відстеження</dt><dd><a href="/settings">Ключові слова й канали</a></dd>' +
+      '<dt>Статистика</dt><dd><a href="/stats">Перевірені й надіслані пости</a></dd>' +
       '<dt>AI-розбір</dt><dd><a href="/failures">Журнал помилок</a></dd></dl>',
   };
 

@@ -71,7 +71,7 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
 <main>
   <header>
     <h1>Помилки AI-розбору</h1>
-    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/subscribers">Підписники</a></nav>
+    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/subscribers">Підписники</a><a href="/stats">Статистика</a></nav>
   </header>
   <div class="toolbar">
     <p class="summary" id="summary">Завантаження…</p>

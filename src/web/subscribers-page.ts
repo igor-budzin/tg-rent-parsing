@@ -49,7 +49,7 @@ export const SUBSCRIBERS_PAGE_HTML = `<!doctype html>
 <main>
   <header>
     <h1>Підписники бота</h1>
-    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/failures">Помилки AI</a></nav>
+    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/failures">Помилки AI</a><a href="/stats">Статистика</a></nav>
   </header>
   <p class="summary" id="summary">Завантаження…</p>
   <div class="filters" role="group" aria-label="Фільтр підписників">

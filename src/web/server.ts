@@ -14,7 +14,9 @@ import { LOGIN_PAGE_HTML } from "./login-page.js";
 import { SUBSCRIBERS_PAGE_HTML } from "./subscribers-page.js";
 import { SETTINGS_PAGE_HTML } from "./settings-page.js";
 import { FAILURES_PAGE_HTML } from "./failures-page.js";
+import { STATS_PAGE_HTML } from "./stats-page.js";
 import { listParseFailures, clearParseFailures } from "../services/parse-failures.js";
+import { getPostStats, clearPostStats } from "../services/post-stats.js";
 import {
   getWatchConfigView,
   addKeyword,
@@ -87,6 +89,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     case "DELETE /api/parse-failures":
       await clearParseFailures();
+      sendJson(res, 200, { ok: true });
+      return;
+
+    case "GET /stats":
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(STATS_PAGE_HTML);
+      return;
+
+    case "GET /api/stats":
+      sendJson(res, 200, await getPostStats());
+      return;
+
+    case "DELETE /api/stats":
+      await clearPostStats();
       sendJson(res, 200, { ok: true });
       return;
 
