@@ -39,6 +39,8 @@ export const OPENROUTER_MODELS: string[] = (
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
+// AI requests are spaced to stay under this many per minute; free models allow 20 (0 disables)
+export const OPENROUTER_MAX_RPM = parseInt(process.env.OPENROUTER_MAX_RPM || "16");
 
 // Posts the AI failed to parse are retried this many times before being sent unparsed
 export const PARSE_RETRY_ATTEMPTS = parseInt(process.env.PARSE_RETRY_ATTEMPTS || "3");

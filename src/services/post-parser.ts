@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { OPENROUTER_API_KEY, OPENROUTER_MODELS } from "../config.js";
+import { OPENROUTER_API_KEY, OPENROUTER_MODELS, OPENROUTER_MAX_RPM } from "../config.js";
 import { log } from "../utils/logger.js";
 import { ParsedPost } from "../types/index.js";
 import { recordParseFailure, ParseFailureReason, PostSource } from "./parse-failures.js";
@@ -7,8 +7,10 @@ import { recordParseFailure, ParseFailureReason, PostSource } from "./parse-fail
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // OpenRouter accepts at most this many models in one request's fallback list
 const MAX_MODELS_PER_REQUEST = 3;
-// After all models are rate-limited or down, skip AI for a while instead of slowing down every post
+// After all models are down, skip AI for a while instead of slowing down every post
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+// Per-minute and upstream provider rate limits clear quickly
+const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
 
 const SYSTEM_PROMPT = `You extract real estate listing data from Telegram posts (usually Ukrainian or Russian).
 Return only facts stated in the post; use null when a field is not mentioned.
@@ -44,7 +46,8 @@ function getClient(): OpenAI | null {
     defaultHeaders: { "X-Title": "tg-rent-parsing" },
     // Free models are slower
     timeout: 30_000,
-    maxRetries: 1,
+    // An instant retry of a 429 only spends quota; the retry queue tries again later
+    maxRetries: 0,
   });
   return client;
 }
@@ -58,11 +61,58 @@ export function aiPausedUntil(): number {
   return Date.now() < cooldownUntil ? cooldownUntil : 0;
 }
 
-function startCooldown(error: InstanceType<typeof OpenAI.APIError>): void {
+// Reset time as epoch ms; OpenRouter sends ms, but accept seconds too
+function toEpochMs(value: unknown): number {
+  const n = Number(value);
+  return n > 1e12 ? n : n > 1e9 ? n * 1000 : 0;
+}
+
+function nextUtcMidnight(): number {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+// OpenRouter names its own limit in the message ("free-models-per-day", "free-models-per-min")
+// and puts the reset time in error.metadata.headers; upstream providers' 429s carry neither
+function cooldownMs(error: InstanceType<typeof OpenAI.APIError>): { ms: number; limit: string } {
   const retryAfterSec = Number(error.headers?.get("retry-after"));
-  const cooldownMs = retryAfterSec > 0 ? retryAfterSec * 1000 : DEFAULT_COOLDOWN_MS;
-  cooldownUntil = Date.now() + cooldownMs;
-  log("WARN", "AI parsing paused", { status: error.status, cooldownSec: cooldownMs / 1000 });
+  if (error.status !== 429) {
+    return { ms: retryAfterSec > 0 ? retryAfterSec * 1000 : DEFAULT_COOLDOWN_MS, limit: "provider_error" };
+  }
+  if (/per-day/i.test(error.message)) {
+    const metadata = (error.error as { metadata?: { headers?: Record<string, unknown> } } | undefined)?.metadata;
+    const resetAt =
+      toEpochMs(metadata?.headers?.["X-RateLimit-Reset"]) ||
+      toEpochMs(error.headers?.get("x-ratelimit-reset")) ||
+      nextUtcMidnight();
+    return { ms: Math.max(resetAt - Date.now(), RATE_LIMIT_COOLDOWN_MS), limit: "per_day" };
+  }
+  return {
+    ms: retryAfterSec > 0 ? retryAfterSec * 1000 : RATE_LIMIT_COOLDOWN_MS,
+    limit: /per-min/i.test(error.message) ? "per_minute" : "upstream",
+  };
+}
+
+function startCooldown(error: InstanceType<typeof OpenAI.APIError>): void {
+  const { ms, limit } = cooldownMs(error);
+  cooldownUntil = Date.now() + ms;
+  log("WARN", "AI parsing paused", {
+    status: error.status,
+    limit,
+    cooldownSec: Math.round(ms / 1000),
+    resumesAt: new Date(cooldownUntil).toISOString(),
+  });
+}
+
+// Spaces request starts so bursts of posts stay under the per-minute limit
+let nextRequestAt = 0;
+async function throttle(): Promise<void> {
+  if (OPENROUTER_MAX_RPM <= 0) return;
+  const now = Date.now();
+  const waitMs = Math.max(0, nextRequestAt - now);
+  // Reserve the slot before waiting, so concurrent callers queue up behind each other
+  nextRequestAt = Math.max(now, nextRequestAt) + 60_000 / OPENROUTER_MAX_RPM;
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
 // Free models get removed over time; drop unknown ones once instead of failing every post
@@ -245,6 +295,8 @@ function recordRequestError(error: RequestError, text: string, source: PostSourc
 export async function parsePost(text: string, source?: PostSource): Promise<ParsedPost | null> {
   const ai = getClient();
   if (!ai) return null;
+  // Before the cooldown check: a pause may start while this post waits for its slot
+  await throttle();
   if (Date.now() < cooldownUntil) {
     recordParseFailure({
       reason: "cooldown",
@@ -290,6 +342,7 @@ export async function parsePost(text: string, source?: PostSource): Promise<Pars
       reason: first.reason,
       next: models[nextIndex],
     });
+    await throttle();
     const second = await requestParse(ai, text, nextIndex);
     if (second.parsed) {
       log("DEBUG", "Post parsed by AI", { model: second.model, parsed: second.parsed });
