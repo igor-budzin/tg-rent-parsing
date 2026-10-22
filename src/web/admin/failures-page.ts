@@ -1,3 +1,6 @@
+import { ADMIN_NAV } from "./nav.js";
+import { PAGE_HEAD } from "../styles.js";
+
 export const FAILURES_PAGE_HTML = `<!doctype html>
 <html lang="uk">
 <head>
@@ -11,11 +14,16 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
     --warn: #a15c00; --warn-bg: #fff4e0; --off-bg: #eceff1; --code-bg: #f6f8fa;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #17191c; --card: #212428; --text: #e4e6eb; --muted: #a0a4ab;
       --border: #3a3d42; --accent: #3a9ce0; --err: #ef7a72; --err-bg: #3a2020;
       --warn: #f0b45a; --warn-bg: #3a2e1a; --off-bg: #2c2f33; --code-bg: #1a1c1f;
     }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17191c; --card: #212428; --text: #e4e6eb; --muted: #a0a4ab;
+    --border: #3a3d42; --accent: #3a9ce0; --err: #ef7a72; --err-bg: #3a2020;
+    --warn: #f0b45a; --warn-bg: #3a2e1a; --off-bg: #2c2f33; --code-bg: #1a1c1f;
   }
   * { box-sizing: border-box; }
   body {
@@ -26,7 +34,7 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
   header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
   h1 { font-size: 20px; margin: 0; }
   a { color: var(--accent); }
-  nav { display: flex; gap: 16px; font-size: 14px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; }
   .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
   .summary { color: var(--muted); font-size: 14px; margin: 0; }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -66,12 +74,13 @@ export const FAILURES_PAGE_HTML = `<!doctype html>
   .muted { color: var(--muted); }
   .empty { padding: 32px; text-align: center; color: var(--muted); background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
 </style>
+${PAGE_HEAD}
 </head>
 <body>
 <main>
   <header>
     <h1>Помилки AI-розбору</h1>
-    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/subscribers">Підписники</a><a href="/stats">Статистика</a></nav>
+    ${ADMIN_NAV}
   </header>
   <div class="toolbar">
     <p class="summary" id="summary">Завантаження…</p>

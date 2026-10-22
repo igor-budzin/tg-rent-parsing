@@ -39,6 +39,9 @@ export async function initDb(): Promise<void> {
   await initParseFailuresTable();
   await initParseQueueTable();
   await initPostStatsTable();
+  // Tables above predate migrations and stay as they are; everything newer is a migration
+  const { runMigrations } = await import("./migrations.js");
+  await runMigrations();
   log("DEBUG", "Database tables ready");
 }
 
@@ -79,6 +82,23 @@ async function initWatchSettingsTables(): Promise<void> {
       }
       log("INFO", `Imported ${table.seed.length} ${table.name} from env vars`);
     }
+  }
+}
+
+export type Db = pg.Pool | pg.PoolClient;
+
+export async function withTransaction<T>(fn: (db: pg.PoolClient) => Promise<T>): Promise<T> {
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    const result = await fn(db);
+    await db.query("COMMIT");
+    return result;
+  } catch (error) {
+    await db.query("ROLLBACK");
+    throw error;
+  } finally {
+    db.release();
   }
 }
 

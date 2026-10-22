@@ -1,23 +1,15 @@
 import { TelegramClient, Api } from "telegram";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { log } from "../utils/logger.js";
-import { findMatchingKeywords } from "../utils/keywords.js";
-import {
-  findWatchedChannel,
-  getResolvedChannels,
-  roomsMatch,
-  floorMatches,
-  priceMatches,
-} from "../services/watch-config.js";
+import { findWatchedChannel, getResolvedChannels } from "../services/watch-config.js";
 import { CHECK_INTERVAL_MS, PARSE_RETRY_ATTEMPTS, PARSE_RETRY_DELAY_MS } from "../config.js";
-import {
-  sendNotification,
-  sendPhotoNotification,
-  sendAlbumNotification,
-} from "../services/notification.js";
+import { sendPostToChat } from "../services/notification.js";
 import { parsePost, isAiEnabled } from "../services/post-parser.js";
 import { enqueuePost } from "../services/parse-queue.js";
-import { hasActiveSubscribers } from "../services/subscribers.js";
+import { getAudience, getAllKeywords, AudienceAccount } from "../services/audience.js";
+import { findMatchingKeywords, postFitsFilters } from "../services/filters.js";
+import { savePost, getDeliveredUserIds, recordDeliveries } from "../services/posts.js";
+import { escapeHtml } from "../services/bot-api.js";
 import { recordPostStat } from "../services/post-stats.js";
 import { MessageStats, ParsedPost } from "../types/index.js";
 
@@ -51,10 +43,6 @@ async function downloadAlbumPhotos(
   return photoBuffers;
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 const PRICE_PERIODS = { month: " / міс.", day: " / доба" } as const;
 
 function formatParsedCaption(
@@ -86,68 +74,100 @@ function formatParsedCaption(
   return `${lines.join("\n")}\n\n<b>Канал:</b> ${escapeHtml(channelTitle)}\n${messageLink}`;
 }
 
-// Sends the post's photos with the caption, falling back to a text message.
-// Returns whether at least one subscriber got it.
-async function sendPost(
+// The post's photos, downloaded once for all recipients; none when there are none or they fail
+async function downloadPhotos(
   client: TelegramClient,
   message: Api.Message,
-  channelEntity: Api.Channel,
-  caption: string
-): Promise<boolean> {
-  const groupedId = message.groupedId;
-
-  if (groupedId) {
-    try {
-      const photoBuffers = await downloadAlbumPhotos(client, channelEntity, message, groupedId);
-      if (photoBuffers.length > 1 && (await sendAlbumNotification(photoBuffers, caption))) return true;
-      if (photoBuffers.length === 1 && (await sendPhotoNotification(photoBuffers[0], caption))) return true;
-    } catch (error) {
-      log("ERROR", "Failed to process album", { error });
+  channelEntity: Api.Channel
+): Promise<Buffer[]> {
+  try {
+    if (message.groupedId) {
+      return await downloadAlbumPhotos(client, channelEntity, message, message.groupedId);
     }
-  } else if (message.photo) {
-    try {
+    if (message.photo) {
       const photoBuffer = (await client.downloadMedia(message, {})) as Buffer;
-      if (photoBuffer && (await sendPhotoNotification(photoBuffer, caption))) return true;
-    } catch (error) {
-      log("ERROR", "Failed to download/send photo", { error });
+      return photoBuffer ? [photoBuffer] : [];
     }
+  } catch (error) {
+    log("ERROR", "Failed to download post photos", { error });
   }
-
-  return sendNotification(caption);
+  return [];
 }
 
-// Unparsed posts are sent as is; parsed ones only when they fit the room, floor and price filters
+function formatRawCaption(message: Api.Message, channelTitle: string, keywords: string[], messageLink: string): string {
+  return `<b>Match found!</b>
+
+<b>Channel:</b> ${escapeHtml(channelTitle)}
+<b>Keywords:</b> ${escapeHtml(keywords.join(", "))}
+
+${escapeHtml(message.message)}
+
+${messageLink}`;
+}
+
+// Each account with an active subscription gets the post when it contains one of the
+// account's keywords and, if parsed, fits its room, floor and price filters. Unparsed posts
+// skip the filters. Users who already got the post (a retry or a repost) are skipped.
 export async function deliverPost(
   client: TelegramClient,
   message: Api.Message,
   channelEntity: Api.Channel,
   channelTitle: string,
-  matchedKeywords: string[],
+  _matchedKeywords: string[],
   messageLink: string,
   parsed: ParsedPost | null
 ): Promise<void> {
-  if (
-    parsed &&
-    (!roomsMatch(parsed.rooms) || !floorMatches(parsed.floor) || !(await priceMatches(parsed.price)))
-  ) {
-    log("INFO", "Post skipped: doesn't fit the room/floor/price filter", {
+  const targets: { account: AudienceAccount; keywords: string[] }[] = [];
+  for (const account of await getAudience()) {
+    const keywords = findMatchingKeywords(message.message, account.filters.keywords);
+    if (keywords.length > 0 && (await postFitsFilters(account.filters, parsed))) {
+      targets.push({ account, keywords });
+    }
+  }
+
+  if (targets.length === 0) {
+    log("INFO", "Post skipped: no account's filters fit it", {
       channel: channelTitle,
       messageId: message.id,
-      rooms: parsed.rooms,
-      floor: parsed.floor,
-      price: parsed.price,
+      rooms: parsed?.rooms,
+      floor: parsed?.floor,
+      price: parsed?.price,
     });
     recordPostStat(channelTitle, "filtered_out");
     return;
   }
 
-  const caption = parsed
-    ? formatParsedCaption(parsed, channelTitle, messageLink)
-    : `<b>Match found!</b>\n\n<b>Channel:</b> ${channelTitle}\n<b>Keywords:</b> ${matchedKeywords.join(", ")}\n\n${message.message}\n\n${messageLink}`;
+  const postId = await savePost({
+    channelId: channelEntity.id.toString(),
+    messageId: message.id,
+    channelTitle,
+    messageLink,
+    text: message.message,
+    parsed,
+  });
+  const alreadyDelivered = await getDeliveredUserIds(postId);
+  const photos = await downloadPhotos(client, message, channelEntity);
 
-  if (await sendPost(client, message, channelEntity, caption)) {
-    recordPostStat(channelTitle, "sent");
+  let sentCount = 0;
+  for (const { account, keywords } of targets) {
+    const caption = parsed
+      ? formatParsedCaption(parsed, channelTitle, messageLink)
+      : formatRawCaption(message, channelTitle, keywords, messageLink);
+    const delivered: { userId: string; accountId: string }[] = [];
+    for (const recipient of account.recipients) {
+      if (alreadyDelivered.has(recipient.userId)) continue;
+      alreadyDelivered.add(recipient.userId);
+      if (await sendPostToChat(recipient.chatId, photos, caption)) {
+        delivered.push({ userId: recipient.userId, accountId: account.accountId });
+      }
+    }
+    // Recorded per account, so a crash halfway doesn't resend to those already reached
+    await recordDeliveries(postId, delivered);
+    sentCount += delivered.length;
   }
+
+  log("INFO", "Post delivered", { channel: channelTitle, messageId: message.id, accounts: targets.length, recipients: sentCount });
+  if (sentCount > 0) recordPostStat(channelTitle, "sent");
 }
 
 // A post the AI fails to parse goes to the parse queue and is retried later;
@@ -208,15 +228,15 @@ function buildMessageLink(channelEntity: Api.Channel, messageId: number): string
 // poller so each post is notified once
 const lastProcessedIds = new Map<string, number>();
 
-// Channels are only watched while someone is subscribed to the bot
+// Channels are only watched while some account can receive notifications
 let paused = false;
 
 async function isWatching(): Promise<boolean> {
   let watching: boolean;
   try {
-    watching = await hasActiveSubscribers();
+    watching = (await getAudience()).length > 0;
   } catch (error) {
-    log("WARN", "Could not check subscribers, keeping current watch state", {
+    log("WARN", "Could not check accounts, keeping current watch state", {
       error: error instanceof Error ? error.message : String(error),
     });
     return !paused;
@@ -224,8 +244,8 @@ async function isWatching(): Promise<boolean> {
   if (watching === paused) {
     paused = !watching;
     log("INFO", watching
-      ? "Subscriber present, resuming channel watching"
-      : "No active subscribers, pausing channel watching");
+      ? "Active account present, resuming channel watching"
+      : "No account with an active subscription, pausing channel watching");
   }
   if (!watching) {
     // Forget progress so posts published while paused are not replayed on resume
@@ -265,7 +285,7 @@ async function processChannelMessage(
       : "unknown",
   });
 
-  const matchedKeywords = findMatchingKeywords(messageText);
+  const matchedKeywords = findMatchingKeywords(messageText, await getAllKeywords());
 
   if (matchedKeywords.length > 0) {
     stats.matchCount++;

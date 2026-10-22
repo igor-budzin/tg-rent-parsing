@@ -1,9 +1,14 @@
-import { BOT_TOKEN } from "../config.js";
+import { APP_URL, PAYMENT_INSTRUCTIONS, SUPPORT_CONTACT } from "../config.js";
 import { log } from "../utils/logger.js";
-import { addSubscriber, removeSubscriber } from "./subscribers.js";
+import { callBotApi, escapeHtml, sendBotText } from "./bot-api.js";
+import { upsertTelegramUser, markBotBlocked, setNotificationsEnabled, User, displayName } from "./users.js";
+import { ensureAccount, previewInvite, acceptInvite, listMembers, getMembership, Role } from "./accounts.js";
+import { getSubscriptionStatus } from "./subscriptions.js";
+import { createLoginToken } from "./auth.js";
 
 const POLL_TIMEOUT_SEC = 30;
 const RETRY_DELAY_MS = 5000;
+const INVITE_PREFIX = "inv_";
 
 interface TelegramUser {
   id: number;
@@ -19,83 +24,196 @@ interface TelegramUpdate {
     from?: TelegramUser;
     text?: string;
   };
+  callback_query?: {
+    id: string;
+    from: TelegramUser;
+    data?: string;
+    message?: { message_id: number; chat: { id: number; type: string } };
+  };
   my_chat_member?: {
     chat: { id: number; type: string };
     new_chat_member: { status: string };
   };
 }
 
-async function callBotApi<T>(method: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!data.ok) {
-    throw new Error(`${method} failed: ${data.error_code} ${data.description}`);
-  }
-  return data.result as T;
-}
-
-// Reply-keyboard buttons; pressing one sends its label as a plain text message
+// Reply-keyboard buttons; pressing one sends its label as a plain text message.
+// They turn this person's notifications on and off; the account stays as it is.
 const START_BUTTON = "▶️ Підписатися";
 const STOP_BUTTON = "⏹ Зупинити";
+
+const ROLE_NAMES: Record<Role, string> = { owner: "власник", editor: "редактор", viewer: "глядач" };
 
 function keyboardWith(button: string) {
   return { keyboard: [[{ text: button }]], resize_keyboard: true, is_persistent: true };
 }
 
-async function reply(chatId: number, text: string, button: string): Promise<void> {
-  try {
-    await callBotApi("sendMessage", {
-      chat_id: chatId,
-      text,
-      reply_markup: keyboardWith(button),
-    });
-  } catch (error) {
-    log("ERROR", "Failed to reply to bot command", { chatId, error: String(error) });
+async function reply(chatId: number, html: string, button?: string): Promise<void> {
+  await sendBotText(chatId, html, {
+    disable_web_page_preview: true,
+    ...(button ? { reply_markup: keyboardWith(button) } : {}),
+  });
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("uk-UA", { timeZone: "Europe/Kyiv", day: "numeric", month: "long", year: "numeric" });
+}
+
+async function loginLink(user: User): Promise<string> {
+  const token = await createLoginToken(user.id);
+  return `${APP_URL}/auth/link?token=${token}`;
+}
+
+export function paymentHint(): string {
+  const lines = [];
+  if (PAYMENT_INSTRUCTIONS) lines.push(escapeHtml(PAYMENT_INSTRUCTIONS));
+  if (SUPPORT_CONTACT) lines.push(`Звʼязок: ${escapeHtml(SUPPORT_CONTACT)}`);
+  return lines.join("\n");
+}
+
+async function statusText(user: User): Promise<string> {
+  const membership = await getMembership(user.id);
+  if (!membership) return "У вас ще немає акаунта. Надішліть /start.";
+  const status = await getSubscriptionStatus(membership.accountId);
+  const lines = [
+    `<b>Акаунт:</b> ${escapeHtml(membership.accountName)} (${ROLE_NAMES[membership.role]})`,
+    status.active
+      ? `<b>Підписка:</b> ${status.kind === "trial" ? "пробний період" : escapeHtml(status.plan?.name ?? "активна")} до ${formatDate(status.endsAt!)}`
+      : "<b>Підписка:</b> неактивна — сповіщення не надсилаються",
+    `<b>Сповіщення:</b> ${user.notificationsEnabled ? "увімкнені" : "вимкнені"}`,
+  ];
+  if (!status.active && paymentHint()) lines.push("", paymentHint());
+  return lines.join("\n");
+}
+
+function profileOf(from: TelegramUser, chatId: number) {
+  return {
+    telegramUserId: String(from.id),
+    chatId: String(chatId),
+    username: from.username,
+    firstName: from.first_name,
+    lastName: from.last_name,
+  };
+}
+
+async function handleStart(chatId: number, from: TelegramUser, payload: string): Promise<void> {
+  const user = await upsertTelegramUser(profileOf(from, chatId));
+
+  if (payload.startsWith(INVITE_PREFIX)) {
+    const token = payload.slice(INVITE_PREFIX.length);
+    const preview = await previewInvite(token, user);
+    if (typeof preview === "string") {
+      await reply(chatId, escapeHtml(preview));
+      return;
+    }
+    const leaving = preview.leavingAccountName
+      ? `\n\nВи покинете поточний акаунт «${escapeHtml(preview.leavingAccountName)}».`
+      : "";
+    await sendBotText(
+      chatId,
+      `Вас запрошено до акаунта «<b>${escapeHtml(preview.accountName)}</b>» як ${ROLE_NAMES[preview.role]}. ` +
+        `Ви отримуватимете сповіщення за його фільтрами.${leaving}`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "✅ Приєднатися", callback_data: `join:${token}` },
+            { text: "Скасувати", callback_data: "cancel" },
+          ]],
+        },
+      }
+    );
+    return;
+  }
+
+  const { membership, created, trialStarted } = await ensureAccount(user);
+  await setNotificationsEnabled(user.id, true);
+  log("INFO", "User started the bot", { chatId, username: from.username, accountId: membership.accountId, created });
+
+  const intro = trialStarted
+    ? "Вітаємо! Для вас увімкнено пробний період — сповіщення про нові оголошення вже надходитимуть.\n\n"
+    : "";
+  await reply(
+    chatId,
+    `${intro}${await statusText({ ...user, notificationsEnabled: true })}\n\n` +
+      `Налаштуйте ключові слова, кімнати, поверх і ціну у веб-кабінеті: ${await loginLink(user)}\n` +
+      `Посилання одноразове й діє 15 хвилин; нове — командою /login.`,
+    STOP_BUTTON
+  );
+}
+
+async function handleJoin(callbackId: string, chatId: number, messageId: number, from: TelegramUser, token: string): Promise<void> {
+  const user = await upsertTelegramUser(profileOf(from, chatId));
+  const result = await acceptInvite(token, user);
+  await callBotApi("answerCallbackQuery", { callback_query_id: callbackId }).catch(() => {});
+
+  const text = typeof result === "string"
+    ? escapeHtml(result)
+    : `Ви приєдналися до акаунта «<b>${escapeHtml(result.accountName)}</b>». Сповіщення надходитимуть сюди.\n\nВеб-кабінет: /login`;
+  await callBotApi("editMessageText", { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" }).catch(
+    (error) => log("WARN", "Could not edit invite message", { error: String(error) })
+  );
+  if (typeof result === "string") return;
+
+  await setNotificationsEnabled(user.id, true);
+  log("INFO", "User joined an account by invite", { userId: user.id, accountId: result.accountId });
+  for (const member of await listMembers(result.accountId)) {
+    if (member.userId === user.id || !member.chatId || member.botBlocked) continue;
+    await sendBotText(member.chatId, `${escapeHtml(displayName(user))} приєднався(-лася) до акаунта «${escapeHtml(result.accountName)}».`);
   }
 }
 
-async function handleUpdate(update: TelegramUpdate): Promise<void> {
+async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
+  const message = query.message;
+  if (!message || message.chat.type !== "private" || !query.data) return;
+  if (query.data.startsWith("join:")) {
+    await handleJoin(query.id, message.chat.id, message.message_id, query.from, query.data.slice(5));
+  } else if (query.data === "cancel") {
+    await callBotApi("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
+    await callBotApi("editMessageText", { chat_id: message.chat.id, message_id: message.message_id, text: "Запрошення відхилено." }).catch(() => {});
+  }
+}
+
+export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (update.my_chat_member) {
     const { chat, new_chat_member } = update.my_chat_member;
     if (chat.type === "private" && new_chat_member.status === "kicked") {
-      await removeSubscriber(String(chat.id));
-      log("INFO", "User blocked the bot, unsubscribed", { chatId: chat.id });
+      await markBotBlocked(String(chat.id));
+      log("INFO", "User blocked the bot", { chatId: chat.id });
     }
     return;
   }
 
+  if (update.callback_query) {
+    await handleCallback(update.callback_query);
+    return;
+  }
+
   const message = update.message;
-  if (!message?.text || message.chat.type !== "private") return;
+  if (!message?.text || !message.from || message.chat.type !== "private") return;
 
   const text = message.text.trim();
-  const command = text.split(/[\s@]/)[0].toLowerCase();
+  const [rawCommand, payload = ""] = text.split(/\s+/, 2);
+  const command = rawCommand.split("@")[0].toLowerCase();
   const chatId = message.chat.id;
 
   if (command === "/start" || text === START_BUTTON) {
-    await addSubscriber({
-      chatId: String(chatId),
-      username: message.from?.username,
-      firstName: message.from?.first_name,
-      lastName: message.from?.last_name,
-    });
-    log("INFO", "User subscribed", { chatId, username: message.from?.username });
-    await reply(
-      chatId,
-      `Ви підписані на сповіщення про оренду. Натисніть «${STOP_BUTTON}», щоб відписатися.`,
-      STOP_BUTTON
-    );
+    await handleStart(chatId, message.from, command === "/start" ? payload : "");
   } else if (command === "/stop" || text === STOP_BUTTON) {
-    await removeSubscriber(String(chatId));
-    log("INFO", "User unsubscribed", { chatId, username: message.from?.username });
+    const user = await upsertTelegramUser(profileOf(message.from, chatId));
+    await setNotificationsEnabled(user.id, false);
+    log("INFO", "User turned notifications off", { chatId, username: message.from.username });
     await reply(
       chatId,
-      `Ви відписані від сповіщень. Натисніть «${START_BUTTON}», щоб підписатися знову.`,
+      `Сповіщення вимкнено. Натисніть «${START_BUTTON}», щоб увімкнути знову. Акаунт і фільтри збережено.`,
       START_BUTTON
     );
+  } else if (command === "/login") {
+    const user = await upsertTelegramUser(profileOf(message.from, chatId));
+    await ensureAccount(user);
+    await reply(chatId, `Вхід у веб-кабінет (одноразове посилання, діє 15 хвилин):\n${await loginLink(user)}`);
+  } else if (command === "/status") {
+    const user = await upsertTelegramUser(profileOf(message.from, chatId));
+    await ensureAccount(user);
+    await reply(chatId, await statusText(user));
   }
 }
 
@@ -107,7 +225,7 @@ export async function startBotUpdatesPolling(): Promise<void> {
       const updates = await callBotApi<TelegramUpdate[]>("getUpdates", {
         offset,
         timeout: POLL_TIMEOUT_SEC,
-        allowed_updates: ["message", "my_chat_member"],
+        allowed_updates: ["message", "callback_query", "my_chat_member"],
       });
 
       for (const update of updates) {

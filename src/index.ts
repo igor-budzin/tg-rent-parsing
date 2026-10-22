@@ -5,22 +5,21 @@ import {
   DATABASE_URL,
   ADMIN_PASSWORD,
   PORT,
+  APP_URL,
+  ADMIN_URL,
 } from "./config.js";
 import { log } from "./utils/logger.js";
 import { createAndConnectClient, logCurrentUser } from "./services/telegram-client.js";
 import { initDb, closeDb } from "./services/db.js";
-import { countActiveSubscribers } from "./services/subscribers.js";
+import { countRecipients, getAudience } from "./services/audience.js";
+import { bootstrapAdmin } from "./services/auth.js";
 import { setLoggedIn } from "./services/telegram-auth.js";
-import {
-  loadWatchConfig,
-  attachClient,
-  getChannelNames,
-  getKeywords,
-} from "./services/watch-config.js";
+import { loadWatchConfig, attachClient, getChannelNames } from "./services/watch-config.js";
 import { startWebServer } from "./web/server.js";
 import { startBotUpdatesPolling } from "./services/bot-updates.js";
 import { setupMessageHandler, startChannelPolling } from "./handlers/message-handler.js";
 import { startParseRetryQueue } from "./handlers/parse-retry.js";
+import { startSubscriptionJobs } from "./jobs/subscription-notices.js";
 import { MessageStats } from "./types/index.js";
 
 function validateConfig(): void {
@@ -40,9 +39,13 @@ function validateConfig(): void {
     process.exit(1);
   }
 
-  if (!ADMIN_PASSWORD) {
-    log("ERROR", "ADMIN_PASSWORD must be set in .env file (protects the login web UI)");
-    process.exit(1);
+  for (const [name, value] of [["APP_URL", APP_URL], ["ADMIN_URL", ADMIN_URL]]) {
+    try {
+      new URL(value);
+    } catch {
+      log("ERROR", `${name} must be a full URL, e.g. https://app.example.com`);
+      process.exit(1);
+    }
   }
 }
 
@@ -53,18 +56,18 @@ function logConfiguration(): void {
     DATABASE_URL: DATABASE_URL ? "(set)" : "NOT SET",
     ADMIN_PASSWORD: ADMIN_PASSWORD ? "(set)" : "NOT SET",
     PORT,
+    APP_URL,
+    ADMIN_URL,
   });
 }
 
 async function setupDatabase(): Promise<void> {
   await initDb();
+  await bootstrapAdmin();
   await loadWatchConfig();
-  log("INFO", `Will notify ${await countActiveSubscribers()} subscriber(s)`);
+  log("INFO", `Will notify ${await countRecipients()} user(s) in ${(await getAudience()).length} active account(s)`);
   log("INFO", `Will watch ${getChannelNames().length} channel(s)`, {
     channels: getChannelNames(),
-  });
-  log("INFO", `Will search for ${getKeywords().length} keyword(s)`, {
-    keywords: getKeywords(),
   });
 }
 
@@ -74,7 +77,7 @@ function setupPeriodicStatusLog(stats: MessageStats): void {
       uptime: process.uptime().toFixed(0) + "s",
       messagesReceived: stats.messageCount,
       matchesFound: stats.matchCount,
-      subscribers: await countActiveSubscribers().catch(() => "unknown"),
+      recipients: await countRecipients().catch(() => "unknown"),
       memoryUsage: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB`,
     });
   }, 60000);
@@ -90,6 +93,7 @@ async function main(): Promise<void> {
 
   await setupDatabase();
   startWebServer();
+  startSubscriptionJobs();
   startBotUpdatesPolling().catch((err) => {
     log("ERROR", "Bot updates polling stopped", { error: String(err) });
   });
@@ -108,7 +112,7 @@ async function main(): Promise<void> {
 
   log("INFO", "=".repeat(50));
   log("INFO", "NOW WATCHING FOR NEW MESSAGES...");
-  log("INFO", "Channels and keywords can be changed in the web UI");
+  log("INFO", "Channels are managed in the admin app, filters by each account in the user app");
   log("INFO", "=".repeat(50));
 
   setupPeriodicStatusLog(stats);

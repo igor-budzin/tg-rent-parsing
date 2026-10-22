@@ -7,7 +7,7 @@ export const API_HASH = process.env.API_HASH || "";
 // Telegram Bot token (get from @BotFather)
 export const BOT_TOKEN = process.env.BOT_TOKEN || "";
 
-// Postgres connection string for storing bot subscribers
+// Postgres connection string
 export const DATABASE_URL = process.env.DATABASE_URL || "";
 
 // Channels and keywords are managed in the web UI. These env vars are only used once,
@@ -25,9 +25,23 @@ export const ENV_KEYWORDS: string[] = (process.env.KEYWORDS || "")
 // Check interval in milliseconds (default: 60 seconds)
 export const CHECK_INTERVAL_MS = parseInt(process.env.CHECK_INTERVAL_MS || "60000");
 
-// Web UI for Telegram login (Railway sets PORT automatically)
+// Both web apps are served on one port (Railway sets PORT automatically) and told apart by host
 export const PORT = parseInt(process.env.PORT || "3000");
+// Public URLs of the user app and the admin app; links sent by the bot point to APP_URL
+export const APP_URL = (process.env.APP_URL || `http://app.localhost:${PORT}`).replace(/\/+$/, "");
+export const ADMIN_URL = (process.env.ADMIN_URL || `http://admin.localhost:${PORT}`).replace(/\/+$/, "");
+
+// First admin, created on start when there are no admins yet; later admins are added in the admin app
+export const ADMIN_LOGIN = process.env.ADMIN_LOGIN || "admin";
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+
+// Free trial given once per Telegram user when their first account is created (0 disables)
+export const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || "3");
+// Shown to users on the subscription card: how to pay and whom to contact
+export const PAYMENT_INSTRUCTIONS = process.env.PAYMENT_INSTRUCTIONS || "";
+export const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || "";
+// Matched posts (they hold phone numbers) are deleted after this many days
+export const POST_RETENTION_DAYS = parseInt(process.env.POST_RETENTION_DAYS || "30");
 
 // OpenRouter for parsing matched posts. Empty key disables AI parsing.
 export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";

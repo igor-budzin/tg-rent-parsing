@@ -1,3 +1,6 @@
+import { ADMIN_NAV } from "./nav.js";
+import { PAGE_HEAD } from "../styles.js";
+
 export const STATS_PAGE_HTML = `<!doctype html>
 <html lang="uk">
 <head>
@@ -11,11 +14,16 @@ export const STATS_PAGE_HTML = `<!doctype html>
     --bar-bg: #eceff1;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #17191c; --card: #212428; --text: #e4e6eb; --muted: #a0a4ab;
       --border: #3a3d42; --accent: #3a9ce0; --ok: #6cc070; --warn: #f0b45a; --err: #ef7a72;
       --bar-bg: #2c2f33;
     }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17191c; --card: #212428; --text: #e4e6eb; --muted: #a0a4ab;
+    --border: #3a3d42; --accent: #3a9ce0; --ok: #6cc070; --warn: #f0b45a; --err: #ef7a72;
+    --bar-bg: #2c2f33;
   }
   * { box-sizing: border-box; }
   body {
@@ -27,7 +35,7 @@ export const STATS_PAGE_HTML = `<!doctype html>
   h1 { font-size: 20px; margin: 0; }
   h2 { font-size: 15px; margin: 24px 0 8px; }
   a { color: var(--accent); }
-  nav { display: flex; gap: 16px; font-size: 14px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; }
   .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
   .periods { display: flex; flex-wrap: wrap; gap: 8px; }
   button {
@@ -57,12 +65,13 @@ export const STATS_PAGE_HTML = `<!doctype html>
   .summary { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
   .empty { padding: 24px; text-align: center; color: var(--muted); }
 </style>
+${PAGE_HEAD}
 </head>
 <body>
 <main>
   <header>
     <h1>Статистика постів</h1>
-    <nav><a href="/">Статус</a><a href="/settings">Налаштування</a><a href="/subscribers">Підписники</a><a href="/failures">Помилки AI</a></nav>
+    ${ADMIN_NAV}
   </header>
   <div class="toolbar">
     <div class="periods" id="periods" role="group" aria-label="Період"></div>

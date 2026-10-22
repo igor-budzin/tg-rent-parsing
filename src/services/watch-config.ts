@@ -1,12 +1,11 @@
 import { TelegramClient, Api, utils } from "telegram";
 import { pool } from "./db.js";
 import { resolveChannel } from "./telegram-client.js";
-import { convert } from "./exchange-rates.js";
 import { log } from "../utils/logger.js";
-import { ParsedPost } from "../types/index.js";
 
-// Keywords and channels being watched. Loaded from the database and edited from the
-// web UI; changes take effect immediately without a restart.
+// Channels being watched, shared by all accounts. Loaded from the database and edited from
+// the admin app; changes take effect immediately without a restart. Keywords and the other
+// filters are per account (account-filters.ts).
 
 interface WatchedChannel {
   name: string;
@@ -17,38 +16,9 @@ interface WatchedChannel {
 }
 
 export interface WatchConfigView {
-  keywords: string[];
   channels: { name: string; title?: string; photoId?: string; error?: string }[];
-  rooms: number[];
-  floor: FloorRange;
-  price: PriceRange;
 }
 
-// Allowed floor range, inclusive; a null end is unbounded
-export interface FloorRange {
-  min: number | null;
-  max: number | null;
-}
-
-const MAX_FLOOR = 200;
-
-// Allowed price range in the given currency, inclusive; a null end is unbounded
-export interface PriceRange {
-  min: number | null;
-  max: number | null;
-  currency: string;
-}
-
-const CURRENCIES = ["UAH", "USD", "EUR"];
-
-// Room counts selectable in the web UI; the last one also covers anything bigger ("4+")
-export const MAX_ROOMS = 4;
-
-let keywords: string[] = [];
-// Allowed room counts; empty means any
-let rooms: number[] = [];
-let floor: FloorRange = { min: null, max: null };
-let price: PriceRange = { min: null, max: null, currency: "UAH" };
 let channels: WatchedChannel[] = [];
 let client: TelegramClient | null = null;
 
@@ -94,57 +64,10 @@ async function resolveInto(channel: WatchedChannel): Promise<void> {
 }
 
 export async function loadWatchConfig(): Promise<void> {
-  const keywordRows = await pool.query<{ keyword: string }>(
-    "SELECT keyword FROM keywords ORDER BY added_at, keyword"
-  );
   const channelRows = await pool.query<{ name: string }>(
     "SELECT name FROM channels ORDER BY added_at, name"
   );
-  const settingRows = await pool.query<{ key: string; value: unknown }>(
-    "SELECT key, value FROM settings"
-  );
-  const settings = new Map(settingRows.rows.map((row) => [row.key, row.value]));
-  keywords = keywordRows.rows.map((row) => row.keyword);
   channels = channelRows.rows.map((row) => ({ name: row.name }));
-  rooms = normalizeRooms(settings.get("rooms")) ?? [];
-  floor = normalizeFloor(settings.get("floor")) ?? { min: null, max: null };
-  price = normalizePrice(settings.get("price")) ?? { min: null, max: null, currency: "UAH" };
-}
-
-function normalizePrice(value: unknown): PriceRange | null {
-  if (!value || typeof value !== "object") return null;
-  const { min, max, currency } = value as Record<string, unknown>;
-  const valid = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0);
-  if (!valid(min) || !valid(max) || typeof currency !== "string" || !CURRENCIES.includes(currency)) {
-    return null;
-  }
-  const range = { min: min as number | null, max: max as number | null, currency };
-  if (range.min !== null && range.max !== null && range.min > range.max) return null;
-  return range;
-}
-
-async function saveSetting(key: string, value: unknown): Promise<void> {
-  await pool.query(
-    `INSERT INTO settings (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-    [key, JSON.stringify(value)]
-  );
-}
-
-function normalizeFloor(value: unknown): FloorRange | null {
-  if (!value || typeof value !== "object") return null;
-  const { min, max } = value as Record<string, unknown>;
-  const valid = (v: unknown) => v === null || (Number.isInteger(v) && Math.abs(v as number) <= MAX_FLOOR);
-  if (!valid(min) || !valid(max)) return null;
-  const range = { min: min as number | null, max: max as number | null };
-  if (range.min !== null && range.max !== null && range.min > range.max) return null;
-  return range;
-}
-
-function normalizeRooms(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  if (!value.every((r) => Number.isInteger(r) && r >= 1 && r <= MAX_ROOMS)) return null;
-  return [...new Set(value as number[])].sort((a, b) => a - b);
 }
 
 // Called once the Telegram client is logged in, so channel names can be resolved
@@ -155,57 +78,6 @@ export async function attachClient(telegramClient: TelegramClient): Promise<void
   }
   const resolved = channels.filter((ch) => ch.entity).length;
   log("INFO", `Resolved ${resolved}/${channels.length} channels`);
-}
-
-export function getKeywords(): string[] {
-  return keywords;
-}
-
-// A post whose room count is unknown passes, so listings aren't lost to a vague post
-export function roomsMatch(postRooms: number | null): boolean {
-  if (rooms.length === 0 || postRooms === null) return true;
-  return rooms.includes(Math.min(postRooms, MAX_ROOMS));
-}
-
-export async function setRooms(value: unknown): Promise<string | null> {
-  const normalized = normalizeRooms(value);
-  if (!normalized) return `Кількість кімнат має бути від 1 до ${MAX_ROOMS}`;
-  await saveSetting("rooms", normalized);
-  rooms = normalized;
-  log("INFO", "Room filter changed from web UI", { rooms });
-  return null;
-}
-
-// Same rule as rooms: a post without a stated floor passes
-export function floorMatches(postFloor: number | null): boolean {
-  if (postFloor === null) return true;
-  return (floor.min === null || postFloor >= floor.min) && (floor.max === null || postFloor <= floor.max);
-}
-
-export async function setFloor(value: unknown): Promise<string | null> {
-  const normalized = normalizeFloor(value);
-  if (!normalized) return "Некоректний діапазон поверхів";
-  await saveSetting("floor", normalized);
-  floor = normalized;
-  log("INFO", "Floor filter changed from web UI", { floor });
-  return null;
-}
-
-// A post without a price, or whose currency can't be converted, passes
-export async function priceMatches(postPrice: ParsedPost["price"]): Promise<boolean> {
-  if (!postPrice || (price.min === null && price.max === null)) return true;
-  const amount = await convert(postPrice.amount, postPrice.currency, price.currency);
-  if (amount === null) return true;
-  return (price.min === null || amount >= price.min) && (price.max === null || amount <= price.max);
-}
-
-export async function setPrice(value: unknown): Promise<string | null> {
-  const normalized = normalizePrice(value);
-  if (!normalized) return "Некоректний діапазон цін";
-  await saveSetting("price", normalized);
-  price = normalized;
-  log("INFO", "Price filter changed from web UI", { price });
-  return null;
 }
 
 export function getChannelNames(): string[] {
@@ -230,16 +102,12 @@ export function getResolvedChannels(): { name: string; entity: Api.Channel }[] {
 
 export function getWatchConfigView(): WatchConfigView {
   return {
-    keywords,
     channels: channels.map((ch) => ({
       name: ch.name,
       title: ch.entity?.title,
       photoId: photoIdOf(ch.entity),
       error: ch.error,
     })),
-    rooms,
-    floor,
-    price,
   };
 }
 
@@ -254,24 +122,6 @@ export async function getChannelPhoto(name: string): Promise<Buffer | null> {
   if (!Buffer.isBuffer(data) || data.length === 0) return null;
   channel.photo = { photoId, data };
   return data;
-}
-
-export async function addKeyword(input: string): Promise<string | null> {
-  const keyword = input.trim();
-  if (!keyword) return "Ключове слово порожнє";
-  if (keywords.some((k) => k.toLowerCase() === keyword.toLowerCase())) {
-    return "Таке ключове слово вже є";
-  }
-  await pool.query("INSERT INTO keywords (keyword) VALUES ($1) ON CONFLICT DO NOTHING", [keyword]);
-  keywords = [...keywords, keyword];
-  log("INFO", "Keyword added from web UI", { keyword });
-  return null;
-}
-
-export async function removeKeyword(keyword: string): Promise<void> {
-  await pool.query("DELETE FROM keywords WHERE lower(keyword) = lower($1)", [keyword]);
-  keywords = keywords.filter((k) => k.toLowerCase() !== keyword.toLowerCase());
-  log("INFO", "Keyword removed from web UI", { keyword });
 }
 
 export async function addChannel(input: string): Promise<string | null> {
