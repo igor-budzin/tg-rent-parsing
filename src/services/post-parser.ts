@@ -260,7 +260,12 @@ function recordEmptyAttempt(attempt: ParseAttempt, text: string, source: PostSou
   });
 }
 
-function recordRequestError(error: RequestError, text: string, source: PostSource | undefined): void {
+function recordRequestError(
+  error: RequestError,
+  text: string,
+  source: PostSource | undefined,
+  willRetry: boolean,
+): void {
   const cause = error.cause;
   const details: Record<string, unknown> = { errorType: cause instanceof Error ? cause.name : typeof cause };
   let reason: ParseFailureReason = "error";
@@ -284,10 +289,17 @@ function recordRequestError(error: RequestError, text: string, source: PostSourc
     status,
     error: error.message,
     details,
+    willRetry,
     durationMs: error.durationMs,
     postText: text,
     source,
   });
+}
+
+// Worth pausing AI for: rate limits and provider outages, not bad requests
+function isTransient(error: RequestError): error is RequestError & { cause: InstanceType<typeof OpenAI.APIError> } {
+  const cause = error.cause;
+  return cause instanceof OpenAI.APIError && (cause.status === 429 || (cause.status ?? 0) >= 500);
 }
 
 // Returns null when AI is disabled, unavailable or extracted nothing — callers then queue the post
@@ -320,50 +332,56 @@ export async function parsePost(text: string, source?: PostSource): Promise<Pars
     return null;
   }
 
-  try {
-    const first = await requestParse(ai, text, 0);
-    if (first.parsed) {
-      log("DEBUG", "Post parsed by AI", { model: first.model, parsed: first.parsed });
-      return first.parsed;
+  // A failed request moves on to the models after its chain, so every configured model gets
+  // a chance; an empty answer gets one more try with the next model
+  let index = 0;
+  let emptyRetried = false;
+  while (true) {
+    if (index > 0) await throttle();
+    let attempt: ParseAttempt;
+    try {
+      attempt = await requestParse(ai, text, index);
+    } catch (error) {
+      const requestError = error instanceof RequestError ? error : new RequestError(error, [], 0);
+      const nextIndex = index + Math.max(requestError.chain.length, 1);
+      const willRetry = nextIndex < models.length;
+      recordRequestError(requestError, text, source, willRetry);
+      if (willRetry) {
+        log("WARN", "AI request failed, trying next models", {
+          error: requestError.message,
+          next: models.slice(nextIndex, nextIndex + MAX_MODELS_PER_REQUEST),
+        });
+        index = nextIndex;
+        continue;
+      }
+      // Only pause once every model has failed: a free model's shared pool running dry
+      // shouldn't stop the others
+      if (isTransient(requestError)) startCooldown(requestError.cause);
+      log("WARN", "AI parsing failed", { error: requestError.message });
+      return null;
     }
 
-    // The model answered but extracted nothing — give the next model one more try
-    const answeredIndex = modelIndex(first.model);
-    const nextIndex = answeredIndex === -1 ? 1 : answeredIndex + 1;
-    const willRetry = nextIndex < models.length;
-    recordEmptyAttempt(first, text, source, willRetry);
+    if (attempt.parsed) {
+      log("DEBUG", "Post parsed by AI", { model: attempt.model, parsed: attempt.parsed });
+      return attempt.parsed;
+    }
+
+    // The model answered but extracted nothing
+    const answeredIndex = modelIndex(attempt.model);
+    const nextIndex = answeredIndex === -1 ? index + 1 : answeredIndex + 1;
+    const willRetry = !emptyRetried && nextIndex < models.length;
+    recordEmptyAttempt(attempt, text, source, willRetry);
     if (!willRetry) {
-      log("WARN", "AI extracted nothing", { model: first.model, reason: first.reason });
+      log("WARN", "AI extracted nothing", { model: attempt.model, reason: attempt.reason });
       return null;
     }
 
     log("WARN", "AI extracted nothing, retrying with next model", {
-      model: first.model,
-      reason: first.reason,
+      model: attempt.model,
+      reason: attempt.reason,
       next: models[nextIndex],
     });
-    await throttle();
-    const second = await requestParse(ai, text, nextIndex);
-    if (second.parsed) {
-      log("DEBUG", "Post parsed by AI", { model: second.model, parsed: second.parsed });
-    } else {
-      recordEmptyAttempt(second, text, source, false);
-      log("WARN", "AI extracted nothing", { model: second.model, reason: second.reason });
-    }
-    return second.parsed;
-  } catch (error) {
-    const cause = error instanceof RequestError ? error.cause : error;
-    if (cause instanceof OpenAI.APIError && (cause.status === 429 || (cause.status ?? 0) >= 500)) {
-      startCooldown(cause);
-    }
-    recordRequestError(
-      error instanceof RequestError ? error : new RequestError(error, [], 0),
-      text,
-      source,
-    );
-    log("WARN", "AI parsing failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
+    emptyRetried = true;
+    index = nextIndex;
   }
 }
