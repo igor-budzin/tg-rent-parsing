@@ -7,3 +7,4 @@ session.txt
 *.log
 .git
 .gitignore
+.DS_Store
