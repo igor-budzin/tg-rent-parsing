@@ -1,5 +1,5 @@
 import http from "node:http";
-import { APP_URL, PAYMENT_INSTRUCTIONS, SUPPORT_CONTACT } from "../../config.js";
+import { APP_URL, BOT_TOKEN, PAYMENT_INSTRUCTIONS, SUPPORT_CONTACT } from "../../config.js";
 import { log } from "../../utils/logger.js";
 import {
   createSession,
@@ -56,7 +56,7 @@ async function startSession(req: http.IncomingMessage, res: http.ServerResponse,
 
 async function loginPage(res: http.ServerResponse, error?: string, status = 200): Promise<void> {
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(userLoginPageHtml(await getBotUsername(), APP_URL, error));
+  res.end(userLoginPageHtml(await getBotUsername(), BOT_TOKEN.split(":")[0], APP_URL, error));
 }
 
 async function meView(user: User, m: Membership) {
@@ -189,7 +189,7 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
     case "GET /login":
       return loginPage(res);
 
-    // Telegram Login Widget redirects here with the signed user data
+    // The login page forwards Telegram's signed user data here
     case "GET /auth/telegram": {
       const data = verifyTelegramLogin(url.searchParams);
       if (!data) return loginPage(res, "Не вдалося підтвердити вхід через Telegram. Спробуйте ще раз.", 400);
