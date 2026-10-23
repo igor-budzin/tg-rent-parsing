@@ -38,35 +38,38 @@ import {
   sessionCookie,
   clearCookie,
   clientIp,
+  requireId,
   HttpError,
 } from "../http.js";
+import { RateLimiter } from "../../utils/rate-limit.js";
 import { userLoginPageHtml } from "./login-page.js";
 import { USER_PAGES_HTML, USER_PAGE_PATHS } from "./dashboard-page.js";
 
 const COOKIE = "session";
 const INVITE_PREFIX = "inv_";
 
-async function startSession(req: http.IncomingMessage, res: http.ServerResponse, user: User): Promise<void> {
+// The Set-Cookie header for a new session
+async function startSession(req: http.IncomingMessage, user: User): Promise<string> {
   await ensureAccount(user);
   await touchLogin(user.id);
   const session = await createSession("user", user.id);
   log("INFO", "User logged in to the web app", { userId: user.id });
-  redirect(res, "/", { "Set-Cookie": sessionCookie(req, COOKIE, session.token, session.maxAgeSec) });
+  return sessionCookie(req, COOKIE, session.token, session.maxAgeSec);
 }
 
 async function loginPage(res: http.ServerResponse, error?: string, status = 200): Promise<void> {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(userLoginPageHtml(await getBotUsername(), BOT_TOKEN.split(":")[0], APP_URL, error));
+  sendHtml(res, userLoginPageHtml(await getBotUsername(), BOT_TOKEN.split(":")[0], APP_URL, error), {}, status);
 }
 
 async function meView(user: User, m: Membership) {
-  const [subscription, limits, filters, members, invites] = await Promise.all([
+  const [subscription, filters, members, invites, botUsername] = await Promise.all([
     getSubscriptionStatus(m.accountId),
-    getAccountLimits(m.accountId),
     getFilters(m.accountId),
     listMembers(m.accountId),
     can.invite(m.role) ? listInvites(m.accountId) : Promise.resolve([]),
+    getBotUsername(),
   ]);
+  const limits = await getAccountLimits(m.accountId, undefined, subscription);
   return {
     user: {
       id: user.id,
@@ -86,15 +89,21 @@ async function meView(user: User, m: Membership) {
     limits,
     filters,
     members: members.map(({ chatId, ...member }) => member),
-    invites: await Promise.all(
-      invites.map(async (i) => ({ id: i.id, role: i.role, expiresAt: i.expiresAt, link: await deepLink(INVITE_PREFIX + i.token) }))
-    ),
+    // Links can't be rebuilt from the stored hash; the page shows each one once, on creation
+    invites: invites.map((i) => ({ id: i.id, role: i.role, expiresAt: i.expiresAt })),
     payment: { instructions: PAYMENT_INSTRUCTIONS, support: SUPPORT_CONTACT },
-    botUsername: await getBotUsername(),
+    botUsername,
   };
 }
 
+// Changes per user per minute: generous for clicking around (the keyword form sends one request per
+// keyword), but stops scripts hammering the database or creating rows in a loop
+const mutationLimiter = new RateLimiter(60, 60_000);
+
 async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, route: string, user: User): Promise<void> {
+  if (req.method !== "GET" && !mutationLimiter.take(user.id)) {
+    throw new HttpError(429, "Забагато змін за хвилину. Спробуйте трохи пізніше.");
+  }
   // Re-read on every request, so role changes and removals apply immediately
   const { membership: m } = await ensureAccount(user);
   const respond = async (error: string | null) => {
@@ -155,12 +164,12 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ro
 
     case "DELETE /api/invites": {
       const { id } = await readJson(req);
-      return respond(await revokeInvite(m, String(id ?? "")));
+      return respond(await revokeInvite(m, requireId(id, "ID запрошення")));
     }
 
     case "DELETE /api/members": {
       const { userId } = await readJson(req);
-      const result = await removeMember(m, String(userId ?? ""));
+      const result = await removeMember(m, requireId(userId, "ID користувача"));
       if (typeof result === "string") throw new HttpError(400, result);
       if (result.chatId) {
         await sendBotText(result.chatId, `Вас видалено з акаунта «${escapeHtml(m.accountName)}». Сповіщення за його фільтрами більше не надходитимуть.`);
@@ -170,7 +179,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ro
 
     case "PUT /api/members/role": {
       const { userId, role } = await readJson(req);
-      return respond(await setMemberRole(m, String(userId ?? ""), role));
+      return respond(await setMemberRole(m, requireId(userId, "ID користувача"), role));
     }
 
     case "POST /api/leave":
@@ -189,10 +198,22 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
     case "GET /login":
       return loginPage(res);
 
-    // The login page forwards Telegram's signed user data here
-    case "GET /auth/telegram": {
-      const data = verifyTelegramLogin(url.searchParams);
-      if (!data) return loginPage(res, "Не вдалося підтвердити вхід через Telegram. Спробуйте ще раз.", 400);
+    // Earlier versions of the login page navigated here; the data now comes by POST
+    case "GET /auth/telegram":
+      redirect(res, "/login");
+      return;
+
+    // The login page POSTs Telegram's signed user data here as JSON
+    case "POST /auth/telegram": {
+      const { data: raw } = await readJson(req);
+      const params = new URLSearchParams();
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [key, value] of Object.entries(raw)) {
+          if (typeof value === "string" || typeof value === "number") params.set(key, String(value));
+        }
+      }
+      const data = verifyTelegramLogin(params);
+      if (!data) throw new HttpError(400, "Не вдалося підтвердити вхід через Telegram. Спробуйте ще раз.");
       // The widget asks for permission to write, so the bot can message the user in their private chat
       const user = await upsertTelegramUser({
         telegramUserId: data.id,
@@ -201,8 +222,10 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
         firstName: data.firstName,
         lastName: data.lastName,
       });
-      if (user.status === "blocked") return loginPage(res, "Ваш доступ заблоковано. Зверніться до підтримки.", 403);
-      return startSession(req, res, user);
+      if (user.status === "blocked") throw new HttpError(403, "Ваш доступ заблоковано. Зверніться до підтримки.");
+      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": await startSession(req, user) });
+      res.end(JSON.stringify({ ok: true }));
+      return;
     }
 
     // One-time link sent by the bot's /login and /start
@@ -216,7 +239,8 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
         return loginPage(res, "Посилання для входу недійсне або вже використане. Надішліть боту /login, щоб отримати нове.", 400);
       }
       if (user.status === "blocked") return loginPage(res, "Ваш доступ заблоковано. Зверніться до підтримки.", 403);
-      return startSession(req, res, user);
+      redirect(res, "/", { "Set-Cookie": await startSession(req, user) });
+      return;
     }
 
     case "GET /logout":

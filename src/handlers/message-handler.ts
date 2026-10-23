@@ -386,6 +386,19 @@ let paused = false;
 
 // Matched posts being parsed or delivered right now, see MAX_IN_FLIGHT_POSTS
 let inFlightPosts = 0;
+// Set on shutdown: new matched posts go to the parse queue, to be handled after the restart
+let stopping = false;
+
+// For shutdown: stops starting new posts and waits for the ones in progress, up to timeoutMs.
+// Returns how many were still unfinished.
+export async function drainPosts(timeoutMs: number): Promise<number> {
+  stopping = true;
+  const deadline = Date.now() + timeoutMs;
+  while (inFlightPosts > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return inFlightPosts;
+}
 
 async function isWatching(): Promise<boolean> {
   let watching: boolean;
@@ -432,9 +445,8 @@ async function processChannelMessage(
   log("INFO", `New message received from ${channelTitle}`, {
     source,
     messageId: message.id,
-    textPreview:
-      messageText.substring(0, 100) +
-      (messageText.length > 100 ? "..." : ""),
+    // No text preview: posts carry phone numbers and names, which shouldn't outlive
+    // POST_RETENTION_DAYS in the logs. The message id is enough to find the post.
     textLength: messageText.length,
     date: message.date
       ? new Date(message.date * 1000).toISOString()
@@ -471,8 +483,8 @@ async function processChannelMessage(
     });
 
     // Not awaited: the AI wait and the deliveries of one post don't hold up the next posts
-    if (inFlightPosts >= MAX_IN_FLIGHT_POSTS) {
-      await deferPost(post, `${inFlightPosts} posts already in progress`);
+    if (stopping || inFlightPosts >= MAX_IN_FLIGHT_POSTS) {
+      await deferPost(post, stopping ? "shutting down" : `${inFlightPosts} posts already in progress`);
       return;
     }
     inFlightPosts++;

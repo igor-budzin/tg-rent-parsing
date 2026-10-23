@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { pool, Db, withTransaction } from "./db.js";
 import { audit, Actor } from "./audit.js";
 import { invalidateAudience } from "./audience.js";
@@ -114,12 +114,16 @@ export async function listMembers(accountId: string, db: Db = pool): Promise<Mem
   }));
 }
 
+// Only a hash of the token is stored, so the link can be shown once, when it's created
 export interface Invite {
   id: string;
-  token: string;
   role: Role;
   expiresAt: string;
   createdBy: string | null;
+}
+
+function hashInviteToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 export async function listInvites(accountId: string): Promise<Invite[]> {
@@ -132,7 +136,6 @@ export async function listInvites(accountId: string): Promise<Invite[]> {
   );
   return result.rows.map((row) => ({
     id: row.id,
-    token: row.token,
     role: row.role,
     expiresAt: row.expires_at.toISOString(),
     createdBy: row.first_name || row.username
@@ -149,19 +152,30 @@ async function countMembers(accountId: string, db: Db): Promise<number> {
   return Number(result.rows[0].count);
 }
 
-// Single-use link, valid for a week
-export async function createInvite(m: Membership, role: unknown): Promise<Invite | string> {
+// Unused, unexpired invites an account may have at once
+const MAX_ACTIVE_INVITES = 20;
+
+// Single-use link, valid for a week; the token is returned this once
+export async function createInvite(m: Membership, role: unknown): Promise<(Invite & { token: string }) | string> {
   if (!can.invite(m.role)) return "Запрошувати можуть лише власник і редактори";
   if (role !== "editor" && role !== "viewer") return "Невідома роль";
   const { maxMembers } = await getAccountLimits(m.accountId);
   if ((await countMembers(m.accountId, pool)) >= maxMembers) {
     return `Ваш тариф дозволяє до ${maxMembers} учасників`;
   }
+  const active = await pool.query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM account_invites
+     WHERE account_id = $1 AND revoked_at IS NULL AND expires_at > NOW() AND uses < max_uses`,
+    [m.accountId]
+  );
+  if (Number(active.rows[0].count) >= MAX_ACTIVE_INVITES) {
+    return `Забагато активних запрошень (${MAX_ACTIVE_INVITES}). Скасуйте непотрібні.`;
+  }
   const token = randomBytes(12).toString("base64url");
   const result = await pool.query(
-    `INSERT INTO account_invites (account_id, token, role, created_by_user_id, expires_at)
+    `INSERT INTO account_invites (account_id, token_hash, role, created_by_user_id, expires_at)
      VALUES ($1, $2, $3, $4, NOW() + $5 * INTERVAL '1 day') RETURNING id, expires_at`,
-    [m.accountId, token, role, m.userId, INVITE_TTL_DAYS]
+    [m.accountId, hashInviteToken(token), role, m.userId, INVITE_TTL_DAYS]
   );
   await audit({ type: "user", id: m.userId }, "invite.created", { type: "account", id: m.accountId }, { role });
   return { id: result.rows[0].id, token, role, expiresAt: result.rows[0].expires_at.toISOString(), createdBy: null };
@@ -190,8 +204,8 @@ async function findInvite(token: string, db: Db, lock = false): Promise<InviteRo
     `SELECT i.id, i.account_id, i.role, a.name AS account_name, a.status AS account_status,
        (i.revoked_at IS NULL AND i.expires_at > NOW() AND i.uses < i.max_uses) AS valid
      FROM account_invites i JOIN accounts a ON a.id = i.account_id
-     WHERE i.token = $1 ${lock ? "FOR UPDATE OF i" : ""}`,
-    [token]
+     WHERE i.token_hash = $1 ${lock ? "FOR UPDATE OF i" : ""}`,
+    [hashInviteToken(token)]
   );
   return result.rows[0] ?? null;
 }
@@ -358,18 +372,22 @@ export async function getAccountDetail(accountId: string): Promise<AccountDetail
   const result = await pool.query("SELECT * FROM accounts WHERE id = $1", [accountId]);
   const row = result.rows[0];
   if (!row) return null;
-  const deliveries = await pool.query<{ count: string }>(
-    "SELECT COUNT(*) AS count FROM deliveries WHERE account_id = $1 AND sent_at > NOW() - INTERVAL '30 days'",
-    [accountId]
-  );
+  const [deliveries, subscription, members] = await Promise.all([
+    pool.query<{ count: string }>(
+      "SELECT COUNT(*) AS count FROM deliveries WHERE account_id = $1 AND sent_at > NOW() - INTERVAL '30 days'",
+      [accountId]
+    ),
+    getSubscriptionStatus(accountId),
+    listMembers(accountId),
+  ]);
   return {
     id: row.id,
     name: row.name,
     status: row.status,
     createdAt: row.created_at.toISOString(),
-    subscription: await getSubscriptionStatus(accountId),
-    limits: await getAccountLimits(accountId),
-    members: await listMembers(accountId),
+    subscription,
+    limits: await getAccountLimits(accountId, pool, subscription),
+    members,
     deliveries30d: Number(deliveries.rows[0].count),
   };
 }

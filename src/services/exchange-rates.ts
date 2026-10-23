@@ -8,9 +8,18 @@ const RETRY_MS = 5 * 60 * 1000;
 // UAH per one unit of currency
 let rates: Map<string, number> | null = null;
 let nextFetchAt = 0;
+// Callers arriving while a refresh is under way wait for it instead of each starting their own
+let refreshing: Promise<Map<string, number> | null> | null = null;
 
-async function getRates(): Promise<Map<string, number> | null> {
-  if (Date.now() < nextFetchAt) return rates;
+function getRates(): Promise<Map<string, number> | null> {
+  if (Date.now() < nextFetchAt) return Promise.resolve(rates);
+  refreshing ??= refreshRates().finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+async function refreshRates(): Promise<Map<string, number> | null> {
   try {
     const response = await fetch(NBU_URL, { signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);

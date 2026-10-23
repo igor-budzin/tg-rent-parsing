@@ -110,31 +110,40 @@ export interface SubscriptionStatus {
   daysLeft: number;
 }
 
+// One query: the current period with its plan (columns are null when there is none) and the end
+// of the last period
 export async function getSubscriptionStatus(accountId: string, db: Db = pool): Promise<SubscriptionStatus> {
-  const current = await db.query(
-    `SELECT s.kind, p.* FROM subscriptions s JOIN plans p ON p.id = s.plan_id
-     WHERE s.account_id = $1 AND s.cancelled_at IS NULL AND s.starts_at <= NOW() AND s.ends_at > NOW()
-     ORDER BY s.starts_at DESC LIMIT 1`,
+  const result = await db.query(
+    `SELECT cur.*,
+       (SELECT MAX(ends_at) FROM subscriptions WHERE account_id = $1 AND cancelled_at IS NULL) AS last_ends_at
+     FROM (SELECT 1) one
+     LEFT JOIN LATERAL (
+       SELECT s.kind, p.* FROM subscriptions s JOIN plans p ON p.id = s.plan_id
+       WHERE s.account_id = $1 AND s.cancelled_at IS NULL AND s.starts_at <= NOW() AND s.ends_at > NOW()
+       ORDER BY s.starts_at DESC LIMIT 1
+     ) cur ON TRUE`,
     [accountId]
   );
-  const end = await db.query<{ ends_at: Date | null }>(
-    "SELECT MAX(ends_at) AS ends_at FROM subscriptions WHERE account_id = $1 AND cancelled_at IS NULL",
-    [accountId]
-  );
-  const endsAt = end.rows[0].ends_at;
-  const row = current.rows[0];
+  const row = result.rows[0];
+  const endsAt: Date | null = row.last_ends_at;
+  const active = row.id !== null;
   return {
-    active: Boolean(row),
-    kind: row?.kind ?? null,
-    plan: row ? toPlan(row) : null,
+    active,
+    kind: active ? row.kind : null,
+    plan: active ? toPlan(row) : null,
     endsAt: endsAt?.toISOString() ?? null,
-    daysLeft: row && endsAt ? Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / 86_400_000)) : 0,
+    daysLeft: active && endsAt ? Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / 86_400_000)) : 0,
   };
 }
 
-// Limits of the current plan; without an active subscription, those of the trial plan
-export async function getAccountLimits(accountId: string, db: Db = pool): Promise<{ maxMembers: number; maxKeywords: number }> {
-  const status = await getSubscriptionStatus(accountId, db);
+// Limits of the current plan; without an active subscription, those of the trial plan. Pass the
+// status when it's already loaded, to save the query.
+export async function getAccountLimits(
+  accountId: string,
+  db: Db = pool,
+  known?: SubscriptionStatus
+): Promise<{ maxMembers: number; maxKeywords: number }> {
+  const status = known ?? (await getSubscriptionStatus(accountId, db));
   const plan = status.plan ?? (await getPlanByCode(TRIAL_PLAN_CODE, db));
   return { maxMembers: plan?.maxMembers ?? 1, maxKeywords: plan?.maxKeywords ?? 10 };
 }

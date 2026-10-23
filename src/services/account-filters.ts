@@ -49,11 +49,23 @@ export async function addKeyword(accountId: string, input: string): Promise<stri
   if (keyword.length > 100) return "Ключове слово задовге";
   const problem = keywordProblem(keyword);
   if (problem) return problem;
-  const { keywords } = await getFilters(accountId);
-  if (keywords.some((k) => k.toLowerCase() === keyword.toLowerCase())) return "Таке ключове слово вже є";
   const { maxKeywords } = await getAccountLimits(accountId);
-  if (keywords.length >= maxKeywords) return `Ваш тариф дозволяє до ${maxKeywords} ключових слів`;
-  await update(accountId, "keywords = array_append(keywords, $2)", [keyword]);
+  await createFilters(accountId);
+  // Checked and appended in one statement, so concurrent adds (the page sends one request per
+  // comma-separated keyword) can't go over the limit or add the same word twice
+  const added = await pool.query(
+    `UPDATE account_filters SET keywords = array_append(keywords, $2), updated_at = NOW()
+     WHERE account_id = $1 AND cardinality(keywords) < $3
+       AND NOT EXISTS (SELECT 1 FROM unnest(keywords) k WHERE lower(k) = lower($2))`,
+    [accountId, keyword, maxKeywords]
+  );
+  if (added.rowCount === 0) {
+    const { keywords } = await getFilters(accountId);
+    return keywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+      ? "Таке ключове слово вже є"
+      : `Ваш тариф дозволяє до ${maxKeywords} ключових слів`;
+  }
+  invalidateAudience();
   log("INFO", "Keyword added", { accountId, keyword });
   return null;
 }

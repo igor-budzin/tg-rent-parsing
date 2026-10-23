@@ -289,14 +289,14 @@ ${BASE_SCRIPT}
     document.getElementById("invite").innerHTML = !me.can.invite ? '' :
       '<h3>Запросити</h3>' +
       (full ? '<p class="hint">Досягнуто ліміту учасників вашого тарифу (' + me.limits.maxMembers + ').</p>' :
-        '<p class="hint">Створіть посилання й надішліть його в Telegram. Воно одноразове й діє 7 днів.</p>' +
+        '<p class="hint">Створіть посилання й надішліть його в Telegram. Воно одноразове й діє 7 днів. Посилання показується лише раз — скопіюйте його одразу.</p>' +
         '<div class="row"><select id="invite-role" aria-label="Роль"><option value="editor">редактор — може змінювати фільтри</option>' +
         '<option value="viewer">глядач — лише отримує сповіщення</option></select>' +
         '<button type="button" id="create-invite">Створити посилання</button></div>') +
       (lastInviteLink ? '<div class="invite-link"><input readonly value="' + esc(lastInviteLink) + '" aria-label="Посилання-запрошення">' +
         '<button type="button" class="secondary" id="copy-invite">Копіювати</button></div>' : '') +
       (me.invites.length ? '<h3>Активні запрошення</h3><ul class="plain">' + me.invites.map((i) =>
-        '<li><span class="grow">' + ROLES[i.role] + ' · до ' + formatDate(i.expiresAt) + '<div class="muted mono">' + esc(i.link || "") + '</div></span>' +
+        '<li><span class="grow">' + ROLES[i.role] + ' · до ' + formatDate(i.expiresAt) + '</span>' +
         '<button class="small danger" data-revoke="' + i.id + '">Скасувати</button></li>').join("") + '</ul>' : '') +
       '<p class="error" data-error="invite"></p>';
 

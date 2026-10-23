@@ -95,8 +95,18 @@ function profileOf(from: TelegramUser, chatId: number) {
   };
 }
 
+const BLOCKED_TEXT = "Ваш доступ заблоковано. Зверніться до підтримки.";
+
+// Users blocked by an admin can't start, join accounts or get login links from the bot either
+async function refuseIfBlocked(user: User, chatId: number): Promise<boolean> {
+  if (user.status !== "blocked") return false;
+  await reply(chatId, escapeHtml(BLOCKED_TEXT) + (SUPPORT_CONTACT ? `\nЗвʼязок: ${escapeHtml(SUPPORT_CONTACT)}` : ""));
+  return true;
+}
+
 async function handleStart(chatId: number, from: TelegramUser, payload: string): Promise<void> {
   const user = await upsertTelegramUser(profileOf(from, chatId));
+  if (await refuseIfBlocked(user, chatId)) return;
 
   if (payload.startsWith(INVITE_PREFIX)) {
     const token = payload.slice(INVITE_PREFIX.length);
@@ -142,7 +152,7 @@ async function handleStart(chatId: number, from: TelegramUser, payload: string):
 
 async function handleJoin(callbackId: string, chatId: number, messageId: number, from: TelegramUser, token: string): Promise<void> {
   const user = await upsertTelegramUser(profileOf(from, chatId));
-  const result = await acceptInvite(token, user);
+  const result = user.status === "blocked" ? BLOCKED_TEXT : await acceptInvite(token, user);
   await callBotApi("answerCallbackQuery", { callback_query_id: callbackId }).catch(() => {});
 
   const text = typeof result === "string"
@@ -208,10 +218,12 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     );
   } else if (command === "/login") {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
+    if (await refuseIfBlocked(user, chatId)) return;
     await ensureAccount(user);
     await reply(chatId, `Вхід у веб-кабінет (одноразове посилання, діє 15 хвилин):\n${await loginLink(user)}`);
   } else if (command === "/status") {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
+    if (await refuseIfBlocked(user, chatId)) return;
     await ensureAccount(user);
     await reply(chatId, await statusText(user));
   }

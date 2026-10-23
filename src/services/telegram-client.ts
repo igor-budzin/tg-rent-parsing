@@ -71,7 +71,8 @@ export async function logCurrentUser(client: TelegramClient): Promise<Api.User> 
     firstName: me.firstName,
     lastName: me.lastName,
     username: me.username,
-    phone: me.phone,
+    // Enough to tell which account it is without putting the number in the logs
+    phone: me.phone ? `…${me.phone.slice(-2)}` : undefined,
   });
   return me;
 }

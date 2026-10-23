@@ -19,7 +19,9 @@ import { setLoggedIn } from "./services/telegram-auth.js";
 import { loadWatchConfig, attachClient, getChannelNames } from "./services/watch-config.js";
 import { startWebServer } from "./web/server.js";
 import { startBotUpdatesPolling } from "./services/bot-updates.js";
-import { setupMessageHandler, startChannelPolling } from "./handlers/message-handler.js";
+import { setupMessageHandler, startChannelPolling, drainPosts } from "./handlers/message-handler.js";
+import type http from "node:http";
+import type { TelegramClient } from "telegram";
 import { startParseRetryQueue } from "./handlers/parse-retry.js";
 import { startSubscriptionJobs } from "./jobs/subscription-notices.js";
 import { MessageStats } from "./types/index.js";
@@ -60,7 +62,7 @@ function validateConfig(): void {
 function logConfiguration(): void {
   log("DEBUG", "Configuration loaded", {
     API_ID: API_ID ? `${API_ID} (set)` : "NOT SET",
-    API_HASH: API_HASH ? `${API_HASH.substring(0, 4)}... (set)` : "NOT SET",
+    API_HASH: API_HASH ? "(set)" : "NOT SET",
     DATABASE_URL: DATABASE_URL ? "(set)" : "NOT SET",
     ADMIN_PASSWORD: ADMIN_PASSWORD ? "(set)" : "NOT SET",
     TELEGRAM_SESSION_KEY: TELEGRAM_SESSION_KEY ? "(set)" : "NOT SET",
@@ -101,19 +103,20 @@ async function main(): Promise<void> {
   validateConfig();
 
   await setupDatabase();
-  startWebServer();
+  const server = startWebServer();
+  const stats: MessageStats = { messageCount: 0, matchCount: 0 };
+  let client: TelegramClient | null = null;
+  setupShutdown(server, () => client, stats);
   startSubscriptionJobs();
   startBotUpdatesPolling().catch((err) => {
     log("ERROR", "Bot updates polling stopped", { error: String(err) });
   });
 
-  const client = await createAndConnectClient();
+  client = await createAndConnectClient();
   await logCurrentUser(client);
   setLoggedIn(client);
 
   await attachClient(client);
-
-  const stats: MessageStats = { messageCount: 0, matchCount: 0 };
 
   setupMessageHandler(client, stats);
   startChannelPolling(client, stats);
@@ -126,21 +129,42 @@ async function main(): Promise<void> {
 
   setupPeriodicStatusLog(stats);
 
-  process.on("SIGINT", async () => {
-    log("INFO", "");
-    log("INFO", "Shutdown signal received...");
+  await new Promise(() => {});
+}
+
+// Docker and Railway stop the container with SIGTERM and kill it about 10 seconds later
+const DRAIN_TIMEOUT_MS = 8_000;
+
+function setupShutdown(server: http.Server, getClient: () => TelegramClient | null, stats: MessageStats): void {
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log("INFO", "Shutdown signal received...", { signal });
     log("INFO", "Final statistics", {
       totalMessages: stats.messageCount,
       totalMatches: stats.matchCount,
       uptime: process.uptime().toFixed(0) + "s",
     });
-    await client.disconnect();
-    await closeDb();
-    log("INFO", "Disconnected from Telegram. Goodbye!");
-    process.exit(0);
-  });
-
-  await new Promise(() => {});
+    try {
+      server.close();
+      // New posts go to the parse queue; the ones being delivered get a few seconds to finish,
+      // so recipients aren't left half-sent
+      const unfinished = await drainPosts(DRAIN_TIMEOUT_MS);
+      if (unfinished > 0) log("WARN", "Shutting down with posts still in progress", { unfinished });
+      // Closing the MTProto connection cleanly avoids AUTH_KEY_DUPLICATED when the next
+      // instance starts while this one is going away
+      await getClient()?.disconnect();
+      await closeDb();
+      log("INFO", "Disconnected from Telegram. Goodbye!");
+      process.exit(0);
+    } catch (error) {
+      log("ERROR", "Shutdown failed", { error: String(error) });
+      process.exit(1);
+    }
+  };
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

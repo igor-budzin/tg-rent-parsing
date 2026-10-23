@@ -1,9 +1,12 @@
+# Local development. Production runs on Railway from the Dockerfile and doesn't use this file.
 services:
   app:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgres://tg_rent:tg_rent@postgres:5432/tg_rent
+      DATABASE_URL: postgres://${POSTGRES_USER:-tg_rent}:${POSTGRES_PASSWORD:-tg_rent}@postgres:5432/${POSTGRES_DB:-tg_rent}
+      # Nothing sits in front of the app here, so X-Forwarded-For comes straight from the client
+      TRUSTED_PROXY_HOPS: "0"
     depends_on:
       postgres:
         condition: service_healthy
@@ -14,15 +17,17 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: tg_rent
-      POSTGRES_PASSWORD: tg_rent
-      POSTGRES_DB: tg_rent
+      # Defaults are for a local machine only; set POSTGRES_PASSWORD when running this anywhere else
+      POSTGRES_USER: ${POSTGRES_USER:-tg_rent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg_rent}
+      POSTGRES_DB: ${POSTGRES_DB:-tg_rent}
     ports:
-      - "5432:5432"
+      # Loopback only: reachable from this machine (psql, the app run with npm run dev), not the network
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tg_rent -d tg_rent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10

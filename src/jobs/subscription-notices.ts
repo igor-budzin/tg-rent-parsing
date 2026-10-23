@@ -4,6 +4,7 @@ import { escapeHtml, sendBotText } from "../services/bot-api.js";
 import { paymentHint } from "../services/bot-updates.js";
 import { deleteOldPosts } from "../services/posts.js";
 import { deleteExpiredAuthRows } from "../services/auth.js";
+import { trimParseFailures } from "../services/parse-failures.js";
 
 // Hourly: reminds owners before their subscription ends, tells all members once it has
 // ended, and deletes data past its retention. Each notice is recorded in notices_sent, so
@@ -86,6 +87,7 @@ export async function runSubscriptionJobsOnce(): Promise<void> {
     const deleted = await deleteOldPosts();
     if (deleted > 0) log("INFO", "Deleted old posts", { deleted });
     await deleteExpiredAuthRows();
+    await trimParseFailures();
   } catch (error) {
     log("WARN", "Cleanup failed", { error: String(error) });
   }

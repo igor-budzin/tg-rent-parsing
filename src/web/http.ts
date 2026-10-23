@@ -1,5 +1,6 @@
 import http from "node:http";
-import { TRUSTED_PROXY_HOPS } from "../config.js";
+import { createHash } from "node:crypto";
+import { ADMIN_URL, APP_URL, TRUSTED_PROXY_HOPS } from "../config.js";
 
 // Request and response helpers shared by the user app and the admin app
 
@@ -16,8 +17,31 @@ export function sendJson(res: http.ServerResponse, status: number, body: unknown
   res.end(JSON.stringify(body));
 }
 
-export function sendHtml(res: http.ServerResponse, html: string, headers: http.OutgoingHttpHeaders = {}): void {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...headers });
+// Only the page's own inline scripts may run, each allowed by its hash, so injected markup can't
+// execute script even if some output escaping is missed. Inline styles stay allowed: the pages
+// use style attributes, and CSS can't run code.
+function contentSecurityPolicy(html: string): string {
+  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    ([, code]) => `'sha256-${createHash("sha256").update(code).digest("base64")}'`
+  );
+  return [
+    "default-src 'none'",
+    `script-src ${hashes.join(" ") || "'none'"}`,
+    "style-src 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "form-action 'self'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+export function sendHtml(res: http.ServerResponse, html: string, headers: http.OutgoingHttpHeaders = {}, status = 200): void {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": contentSecurityPolicy(html),
+    ...headers,
+  });
   res.end(html);
 }
 
@@ -46,6 +70,16 @@ export async function readJson(req: http.IncomingMessage): Promise<Record<string
   }
 }
 
+const MAX_BIGINT = 9223372036854775807n;
+
+// A database id from a request: digits that fit BIGINT. Anything else is a 400 here rather than
+// a Postgres cast error and a 500 later.
+export function requireId(value: unknown, field: string): string {
+  const text = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : typeof value === "string" ? value.trim() : "";
+  if (!/^\d{1,19}$/.test(text) || BigInt(text) > MAX_BIGINT) throw new HttpError(400, `Некоректний ${field}`);
+  return text;
+}
+
 export function requestUrl(req: http.IncomingMessage): URL {
   return new URL(req.url ?? "/", "http://localhost");
 }
@@ -54,8 +88,13 @@ export function hostOf(req: http.IncomingMessage): string {
   return (req.headers.host ?? "").trim().toLowerCase();
 }
 
-function isHttps(req: http.IncomingMessage): boolean {
-  return req.headers["x-forwarded-proto"]?.toString().split(",")[0].trim() === "https";
+// Hosts configured with an https:// URL are served over HTTPS whatever the proxy headers say
+const HTTPS_HOSTS = new Set(
+  [APP_URL, ADMIN_URL].map((u) => new URL(u)).filter((u) => u.protocol === "https:").map((u) => u.host.toLowerCase())
+);
+
+export function isHttps(req: http.IncomingMessage): boolean {
+  return HTTPS_HOSTS.has(hostOf(req)) || req.headers["x-forwarded-proto"]?.toString().split(",")[0].trim() === "https";
 }
 
 // Proxies append the address they saw, so only the rightmost TRUSTED_PROXY_HOPS entries can be
@@ -108,4 +147,8 @@ export const SECURITY_HEADERS: http.OutgoingHttpHeaders = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 };
+
+// Browsers then refuse plain HTTP to this host for a year, so session cookies can't leak over it
+export const HSTS_HEADER = "max-age=31536000";

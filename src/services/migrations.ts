@@ -292,6 +292,32 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "hashed_invite_tokens_and_indexes",
+    up: async (db) => {
+      await db.query(`
+        -- Like sessions and login tokens, invites keep only a hash: a database leak mustn't let
+        -- anyone join accounts. Links already sent keep working, they're looked up by hash.
+        ALTER TABLE account_invites ADD COLUMN token_hash TEXT;
+        UPDATE account_invites SET token_hash = encode(sha256(convert_to(token, 'UTF8')), 'hex');
+        ALTER TABLE account_invites ALTER COLUMN token_hash SET NOT NULL;
+        CREATE UNIQUE INDEX account_invites_token_hash ON account_invites (token_hash);
+        ALTER TABLE account_invites DROP COLUMN token;
+
+        -- Account history in the admin app
+        CREATE INDEX audit_log_target ON audit_log (target_type, target_id, created_at DESC);
+        -- Hourly retention and cleanup jobs
+        CREATE INDEX posts_created ON posts (created_at);
+        CREATE INDEX sessions_expires ON sessions (expires_at);
+        CREATE INDEX login_tokens_expires ON login_tokens (expires_at);
+        -- Ending all sessions of one admin or user
+        CREATE INDEX sessions_subject ON sessions (kind, subject_id);
+        -- Parse queue check every 30 seconds
+        CREATE INDEX parse_queue_due ON parse_queue (next_attempt_at);
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(): Promise<void> {

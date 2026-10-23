@@ -99,11 +99,17 @@ async function insertParseFailure(failure: ParseFailureInput): Promise<void> {
       !failure.willRetry && (failure.source?.queueOnFailure ?? false),
     ]
   );
-  await pool.query(
+}
+
+// Run by the hourly cleanup job rather than after every insert, so a burst of failures doesn't
+// also run a trim query each
+export async function trimParseFailures(): Promise<number> {
+  const result = await pool.query(
     `DELETE FROM parse_failures
      WHERE id < (SELECT id FROM parse_failures ORDER BY id DESC OFFSET $1 LIMIT 1)`,
     [MAX_STORED_FAILURES - 1]
   );
+  return result.rowCount ?? 0;
 }
 
 // Fire and forget: a database problem must not break post handling
@@ -114,6 +120,10 @@ export function recordParseFailure(failure: ParseFailureInput): void {
     });
   });
 }
+
+// The newest ones only: each row carries the full post and model output, so all 1000 would make a
+// multi-megabyte response that the page re-fetches periodically
+export const LISTED_FAILURES = 200;
 
 export async function listParseFailures(): Promise<ParseFailure[]> {
   const result = await pool.query<{
@@ -133,7 +143,7 @@ export async function listParseFailures(): Promise<ParseFailure[]> {
     post_text: string;
     attempt: number;
     queued: boolean;
-  }>("SELECT * FROM parse_failures ORDER BY id DESC");
+  }>("SELECT * FROM parse_failures ORDER BY id DESC LIMIT $1", [LISTED_FAILURES]);
   return result.rows.map((row) => ({
     id: row.id,
     createdAt: row.created_at.toISOString(),

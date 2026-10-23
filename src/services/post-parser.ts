@@ -367,7 +367,9 @@ export async function parsePost(text: string, source?: PostSource): Promise<Pars
     }
 
     if (attempt.parsed) {
-      log("DEBUG", "Post parsed by AI", { model: attempt.model, parsed: attempt.parsed });
+      // Contacts left out: they're phone numbers and names
+      const { contacts, ...fields } = attempt.parsed;
+      log("DEBUG", "Post parsed by AI", { model: attempt.model, parsed: { ...fields, contacts: contacts.length } });
       return attempt.parsed;
     }
 

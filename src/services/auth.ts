@@ -14,8 +14,10 @@ export type SessionKind = "user" | "admin";
 
 const SESSION_TTL_DAYS: Record<SessionKind, number> = { user: 30, admin: 1 };
 const LOGIN_TOKEN_TTL_MIN = 15;
-// Telegram login data older than this is rejected, so a leaked login URL can't be replayed for long
-const TELEGRAM_AUTH_MAX_AGE_SEC = 24 * 60 * 60;
+// Telegram login data older than this is rejected, so leaked login data can't be replayed for long.
+// The page sends it right after Telegram redirects back, so an hour only allows for slow devices
+// and clock skew.
+const TELEGRAM_AUTH_MAX_AGE_SEC = 60 * 60;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");

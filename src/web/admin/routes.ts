@@ -69,6 +69,7 @@ import {
   sessionCookie,
   clearCookie,
   clientIp,
+  requireId,
   HttpError,
 } from "../http.js";
 import { LOGIN_PAGE_HTML } from "./login-page.js";
@@ -256,8 +257,7 @@ async function handleAuthorized(
       return;
 
     case "GET /api/accounts/detail": {
-      const id = url.searchParams.get("id") ?? "";
-      if (!/^\d+$/.test(id)) throw new HttpError(400, "Некоректний ID");
+      const id = requireId(url.searchParams.get("id"), "ID акаунта");
       const account = await getAccountDetail(id);
       if (!account) {
         sendJson(res, 404, { error: "Акаунт не знайдено" });
@@ -275,8 +275,8 @@ async function handleAuthorized(
 
     case "POST /api/accounts/grant": {
       const body = await readJson(req);
-      const accountId = requireString(body.accountId, "акаунт");
-      const plan = await getPlan(requireString(body.planId, "тариф"));
+      const accountId = requireId(body.accountId, "ID акаунта");
+      const plan = await getPlan(requireId(body.planId, "ID тарифу"));
       if (!plan) throw new HttpError(400, "Тариф не знайдено");
       const periods = body.periods ?? 1;
       if (!Number.isInteger(periods) || periods < 1 || periods > 24) throw new HttpError(400, "Кількість періодів: від 1 до 24");
@@ -303,34 +303,33 @@ async function handleAuthorized(
     }
 
     case "POST /api/subscriptions/cancel": {
-      const ok = await cancelSubscription(requireString((await readJson(req)).id, "період"), actor);
+      const ok = await cancelSubscription(requireId((await readJson(req)).id, "ID періоду"), actor);
       sendResult(res, ok ? null : "Період не знайдено або вже скасовано");
       return;
     }
 
     case "POST /api/accounts/status": {
       const { accountId, status } = await readJson(req);
-      sendResult(res, await setAccountStatus(requireString(accountId, "акаунт"), status, actor));
+      sendResult(res, await setAccountStatus(requireId(accountId, "ID акаунта"), status, actor));
       return;
     }
 
     case "POST /api/accounts/transfer": {
       const { accountId, userId } = await readJson(req);
-      sendResult(res, await transferOwnership(requireString(accountId, "акаунт"), requireString(userId, "користувача"), actor));
+      sendResult(res, await transferOwnership(requireId(accountId, "ID акаунта"), requireId(userId, "ID користувача"), actor));
       return;
     }
 
     case "POST /api/accounts/move-user": {
       const { accountId, userId, role } = await readJson(req);
-      const id = requireString(userId, "ID користувача");
-      if (!/^\d+$/.test(id)) throw new HttpError(400, "Некоректний ID користувача");
-      sendResult(res, await moveUserToAccount(requireString(accountId, "акаунт"), id, role, actor));
+      const id = requireId(userId, "ID користувача");
+      sendResult(res, await moveUserToAccount(requireId(accountId, "ID акаунта"), id, role, actor));
       return;
     }
 
     case "POST /api/accounts/remove-member": {
       const { accountId, userId } = await readJson(req);
-      sendResult(res, await adminRemoveMember(requireString(accountId, "акаунт"), requireString(userId, "користувача"), actor));
+      sendResult(res, await adminRemoveMember(requireId(accountId, "ID акаунта"), requireId(userId, "ID користувача"), actor));
       return;
     }
 
@@ -341,7 +340,7 @@ async function handleAuthorized(
     case "POST /api/users/status": {
       const { userId, status } = await readJson(req);
       if (status !== "active" && status !== "blocked") throw new HttpError(400, "Невідомий статус");
-      const id = requireString(userId, "користувача");
+      const id = requireId(userId, "ID користувача");
       await setUserStatus(id, status);
       await audit(actor, status === "blocked" ? "user.blocked" : "user.unblocked", { type: "user", id });
       sendJson(res, 200, { ok: true });
@@ -355,7 +354,9 @@ async function handleAuthorized(
 
     case "POST /api/plans": {
       const body = await readJson(req);
-      sendResult(res, await savePlan(typeof body.id === "string" && body.id ? body.id : null, body, actor));
+      // No id creates a plan
+      const id = body.id === null || body.id === undefined || body.id === "" ? null : requireId(body.id, "ID тарифу");
+      sendResult(res, await savePlan(id, body, actor));
       return;
     }
 
@@ -377,7 +378,7 @@ async function handleAuthorized(
     case "POST /api/admins/role": {
       requireOwner();
       const { adminId, role } = await readJson(req);
-      const id = requireString(adminId, "адміністратора");
+      const id = requireId(adminId, "ID адміністратора");
       const error = await setAdminRole(admin.id, id, role);
       if (!error) await audit(actor, "admin.role_changed", { type: "admin", id }, { role });
       sendResult(res, error);
@@ -388,7 +389,7 @@ async function handleAuthorized(
       requireOwner();
       const { adminId, disabled } = await readJson(req);
       if (typeof disabled !== "boolean") throw new HttpError(400, "Некоректне значення");
-      const id = requireString(adminId, "адміністратора");
+      const id = requireId(adminId, "ID адміністратора");
       const error = await setAdminDisabled(admin.id, id, disabled);
       if (!error) await audit(actor, disabled ? "admin.disabled" : "admin.enabled", { type: "admin", id });
       sendResult(res, error);
@@ -397,7 +398,7 @@ async function handleAuthorized(
 
     case "POST /api/admins/totp/reset": {
       requireOwner();
-      const id = requireString((await readJson(req)).adminId, "адміністратора");
+      const id = requireId((await readJson(req)).adminId, "ID адміністратора");
       const error = await resetTotp(admin.id, id);
       if (!error) await audit(actor, "admin.totp_reset", { type: "admin", id });
       sendResult(res, error);

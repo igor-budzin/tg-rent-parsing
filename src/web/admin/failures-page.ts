@@ -189,7 +189,7 @@ ${PAGE_HEAD}
     const day = Date.now() - 24 * 60 * 60 * 1000;
     const lastDay = failures.filter((f) => new Date(f.createdAt).getTime() > day).length;
     summary.textContent = failures.length
-      ? "За останні 24 год: " + lastDay + " · Усього в журналі: " + failures.length + " (зберігаються останні 1000)"
+      ? "За останні 24 год: " + lastDay + " · Показано: " + failures.length + " (останні 200; у журналі зберігаються останні 1000)"
       : "";
     clearButton.hidden = failures.length === 0;
     renderFilters();
