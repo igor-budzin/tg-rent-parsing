@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { pool } from "./db.js";
 import { ADMIN_LOGIN, ADMIN_PASSWORD, BOT_TOKEN } from "../config.js";
 import { log } from "../utils/logger.js";
+import { generateTotpSecret, totpUrl, verifyTotp } from "./totp.js";
 
 // Sessions for both web apps, Telegram sign-in for users and passwords for admins.
 // Only hashes of session and login tokens are stored, so a database leak can't be used to log in.
@@ -122,34 +123,72 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 // Checked when the login doesn't exist, so the response time doesn't reveal which logins do
 let dummyHash: Promise<string> | null = null;
 
-export async function checkAdminPassword(login: string, password: string): Promise<string | null> {
-  const result = await pool.query<{ id: string; password_hash: string }>(
-    "SELECT id, password_hash FROM admins WHERE lower(login) = lower($1)",
+// Owners also manage admins and the Telegram reader login
+export type AdminRole = "owner" | "admin";
+
+export interface Admin {
+  id: string;
+  login: string;
+  role: AdminRole;
+  disabled: boolean;
+  totpEnabled: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+function toAdmin(row: any): Admin {
+  return {
+    id: row.id,
+    login: row.login,
+    role: row.role,
+    disabled: Boolean(row.disabled_at),
+    totpEnabled: Boolean(row.totp_enabled_at),
+    createdAt: row.created_at.toISOString(),
+    lastLoginAt: row.last_login_at?.toISOString() ?? null,
+  };
+}
+
+// "code_required": the password is right, and the admin has 2FA on but sent no code
+export type AdminLoginResult = { adminId: string } | { error: "invalid" | "code_required" };
+
+// Marks the code's time step used; false when it or a later one already was (a replayed code)
+async function consumeTotpStep(adminId: string, step: number): Promise<boolean> {
+  const result = await pool.query(
+    "UPDATE admins SET totp_last_step = $2 WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)",
+    [adminId, step]
+  );
+  return result.rowCount === 1;
+}
+
+// A disabled admin gets the same answer as a wrong password
+export async function checkAdminLogin(login: string, password: string, code: string | undefined): Promise<AdminLoginResult> {
+  const result = await pool.query(
+    "SELECT id, password_hash, disabled_at, totp_secret, totp_enabled_at FROM admins WHERE lower(login) = lower($1)",
     [login.trim()]
   );
   const admin = result.rows[0];
   if (!admin) {
     await verifyPassword(password, await (dummyHash ??= hashPassword(randomBytes(16).toString("hex"))));
-    return null;
+    return { error: "invalid" };
   }
-  if (!(await verifyPassword(password, admin.password_hash))) return null;
+  if (!(await verifyPassword(password, admin.password_hash)) || admin.disabled_at) return { error: "invalid" };
+  if (admin.totp_enabled_at) {
+    if (!code) return { error: "code_required" };
+    const step = verifyTotp(admin.totp_secret, code);
+    if (step === null || !(await consumeTotpStep(admin.id, step))) return { error: "invalid" };
+  }
   await pool.query("UPDATE admins SET last_login_at = NOW() WHERE id = $1", [admin.id]);
-  return admin.id;
+  return { adminId: admin.id };
 }
 
-export async function getAdminLogin(adminId: string): Promise<string | null> {
-  const result = await pool.query<{ login: string }>("SELECT login FROM admins WHERE id = $1", [adminId]);
-  return result.rows[0]?.login ?? null;
+export async function getAdmin(adminId: string): Promise<Admin | null> {
+  const result = await pool.query("SELECT * FROM admins WHERE id = $1", [adminId]);
+  return result.rows[0] ? toAdmin(result.rows[0]) : null;
 }
 
-export async function listAdmins(): Promise<{ id: string; login: string; createdAt: string; lastLoginAt: string | null }[]> {
-  const result = await pool.query("SELECT id, login, created_at, last_login_at FROM admins ORDER BY id");
-  return result.rows.map((row) => ({
-    id: row.id,
-    login: row.login,
-    createdAt: row.created_at.toISOString(),
-    lastLoginAt: row.last_login_at?.toISOString() ?? null,
-  }));
+export async function listAdmins(): Promise<Admin[]> {
+  const result = await pool.query("SELECT * FROM admins ORDER BY id");
+  return result.rows.map(toAdmin);
 }
 
 export const MIN_PASSWORD_LENGTH = 10;
@@ -173,7 +212,73 @@ export async function changeAdminPassword(adminId: string, password: string): Pr
   return null;
 }
 
-// The first admin comes from ADMIN_LOGIN / ADMIN_PASSWORD; the env vars are ignored once one exists
+// Owners can't change or disable themselves, so there is always at least one active owner
+export async function setAdminRole(actorId: string, adminId: string, role: unknown): Promise<string | null> {
+  if (role !== "owner" && role !== "admin") return "Невідома роль";
+  if (adminId === actorId) return "Власну роль змінити не можна";
+  const result = await pool.query("UPDATE admins SET role = $2 WHERE id = $1", [adminId, role]);
+  return result.rowCount === 0 ? "Адміністратора не знайдено" : null;
+}
+
+export async function setAdminDisabled(actorId: string, adminId: string, disabled: boolean): Promise<string | null> {
+  if (adminId === actorId) return "Себе вимкнути не можна";
+  const result = await pool.query(
+    "UPDATE admins SET disabled_at = CASE WHEN $2 THEN COALESCE(disabled_at, NOW()) END WHERE id = $1",
+    [adminId, disabled]
+  );
+  if (result.rowCount === 0) return "Адміністратора не знайдено";
+  if (disabled) await destroyAllSessions("admin", adminId);
+  return null;
+}
+
+// --- Admin two-factor sign-in (TOTP) ---
+
+const TOTP_ISSUER = "Оренда — адмінка";
+
+// Starts over each time, so a half-finished setup can simply be redone
+export async function startTotpSetup(adminId: string): Promise<{ secret: string; url: string } | string> {
+  const admin = await getAdmin(adminId);
+  if (!admin) return "Адміністратора не знайдено";
+  if (admin.totpEnabled) return "Двофакторний вхід уже увімкнено";
+  const secret = generateTotpSecret();
+  await pool.query("UPDATE admins SET totp_secret = $2, totp_last_step = NULL WHERE id = $1", [adminId, secret]);
+  return { secret, url: totpUrl(secret, admin.login, TOTP_ISSUER) };
+}
+
+// The first code proves the app was set up with the secret
+export async function enableTotp(adminId: string, code: string): Promise<string | null> {
+  const result = await pool.query("SELECT totp_secret, totp_enabled_at FROM admins WHERE id = $1", [adminId]);
+  const row = result.rows[0];
+  if (!row?.totp_secret || row.totp_enabled_at) return "Спершу почніть налаштування";
+  const step = verifyTotp(row.totp_secret, code);
+  if (step === null || !(await consumeTotpStep(adminId, step))) return "Невірний код";
+  await pool.query("UPDATE admins SET totp_enabled_at = NOW() WHERE id = $1", [adminId]);
+  return null;
+}
+
+// Needs a current code, so a stolen session alone can't turn 2FA off
+export async function disableTotp(adminId: string, code: string): Promise<string | null> {
+  const result = await pool.query("SELECT totp_secret, totp_enabled_at FROM admins WHERE id = $1", [adminId]);
+  const row = result.rows[0];
+  if (!row?.totp_enabled_at) return "Двофакторний вхід не увімкнено";
+  const step = verifyTotp(row.totp_secret, code);
+  if (step === null || !(await consumeTotpStep(adminId, step))) return "Невірний код";
+  await pool.query("UPDATE admins SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1", [adminId]);
+  return null;
+}
+
+// For an admin who lost their phone: an owner turns 2FA off, the admin sets it up again
+export async function resetTotp(actorId: string, adminId: string): Promise<string | null> {
+  if (adminId === actorId) return "Свій двофакторний вхід вимикайте кодом із застосунку";
+  const result = await pool.query(
+    "UPDATE admins SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1",
+    [adminId]
+  );
+  return result.rowCount === 0 ? "Адміністратора не знайдено" : null;
+}
+
+// The first admin comes from ADMIN_LOGIN / ADMIN_PASSWORD and is the owner; the env vars are
+// ignored once one exists
 export async function bootstrapAdmin(): Promise<void> {
   const existing = await pool.query("SELECT 1 FROM admins LIMIT 1");
   if (existing.rows.length > 0) return;
@@ -181,7 +286,7 @@ export async function bootstrapAdmin(): Promise<void> {
     log("WARN", "No admins yet and ADMIN_PASSWORD is empty: the admin app can't be used");
     return;
   }
-  await pool.query("INSERT INTO admins (login, password_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+  await pool.query("INSERT INTO admins (login, password_hash, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING", [
     ADMIN_LOGIN,
     await hashPassword(ADMIN_PASSWORD),
   ]);

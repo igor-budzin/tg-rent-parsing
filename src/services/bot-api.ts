@@ -14,11 +14,20 @@ export class BotApiError extends Error {
   }
 }
 
-export async function callBotApi<T>(method: string, body: Record<string, unknown>): Promise<T> {
+// Without a timeout a stalled connection would block its caller forever: the update poller,
+// or a delivery holding up the whole channel loop
+export const BOT_API_TIMEOUT_MS = 30_000;
+
+export async function callBotApi<T>(
+  method: string,
+  body: Record<string, unknown>,
+  timeoutMs = BOT_API_TIMEOUT_MS
+): Promise<T> {
   const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await response.json();
   if (!data.ok) {

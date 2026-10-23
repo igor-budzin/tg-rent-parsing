@@ -7,7 +7,20 @@ import { markBotBlocked } from "./users.js";
 // a second across chats).
 
 const MIN_REQUEST_INTERVAL_MS = 40;
+// Uploads carry up to 10 photos, so they get longer than plain messages
+const TEXT_TIMEOUT_MS = 30_000;
+const MEDIA_TIMEOUT_MS = 120_000;
 let nextRequestAt = 0;
+
+// Telegram's limits on visible text, after HTML tags are parsed out
+export const CAPTION_LIMIT = 1024;
+export const MESSAGE_LIMIT = 4096;
+
+// The same post laid out for a photo caption and for a text message; each already fits its limit
+export interface PostCaption {
+  media: string;
+  text: string;
+}
 
 async function throttle(): Promise<void> {
   const now = Date.now();
@@ -16,16 +29,16 @@ async function throttle(): Promise<void> {
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
-function convertMarkdownToHtml(text: string): string {
-  return text
-    .replace(/\*([^*]+)\*/g, "<b>$1</b>")
-    .replace(/_([^_]+)_/g, "<i>$1</i>");
-}
-
 type SendResult = "ok" | "failed" | "blocked";
 
 // Makes the request, waiting out one 429 (flood limit) before giving up
-async function botRequest(chatId: string, method: string, body: () => BodyInit, json: boolean): Promise<SendResult> {
+async function botRequest(
+  chatId: string,
+  method: string,
+  body: () => BodyInit,
+  json: boolean,
+  timeoutMs: number
+): Promise<SendResult> {
   for (let attempt = 0; attempt < 2; attempt++) {
     await throttle();
     try {
@@ -33,6 +46,7 @@ async function botRequest(chatId: string, method: string, body: () => BodyInit, 
         method: "POST",
         headers: json ? { "Content-Type": "application/json" } : undefined,
         body: body(),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.ok) return "ok";
 
@@ -52,7 +66,11 @@ async function botRequest(chatId: string, method: string, body: () => BodyInit, 
       }
       return "failed";
     } catch (error) {
-      log("ERROR", "Failed to call Bot API", { chatId, method, error });
+      log("ERROR", "Failed to call Bot API", {
+        chatId,
+        method,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      });
       return "failed";
     }
   }
@@ -63,8 +81,9 @@ function sendText(chatId: string, html: string): Promise<SendResult> {
   return botRequest(
     chatId,
     "sendMessage",
-    () => JSON.stringify({ chat_id: chatId, text: convertMarkdownToHtml(html), parse_mode: "HTML" }),
-    true
+    () => JSON.stringify({ chat_id: chatId, text: html, parse_mode: "HTML" }),
+    true,
+    TEXT_TIMEOUT_MS
   );
 }
 
@@ -72,11 +91,11 @@ function sendPhoto(chatId: string, photo: Buffer, caption: string): Promise<Send
   return botRequest(chatId, "sendPhoto", () => {
     const formData = new FormData();
     formData.append("chat_id", chatId);
-    formData.append("caption", caption.substring(0, 1024));
+    formData.append("caption", caption);
     formData.append("parse_mode", "HTML");
     formData.append("photo", new Blob([new Uint8Array(photo)]), "photo.jpg");
     return formData;
-  }, false);
+  }, false, MEDIA_TIMEOUT_MS);
 }
 
 function sendAlbum(chatId: string, photos: Buffer[], caption: string): Promise<SendResult> {
@@ -84,7 +103,7 @@ function sendAlbum(chatId: string, photos: Buffer[], caption: string): Promise<S
     const media = photos.map((_, index) => ({
       type: "photo" as const,
       media: `attach://photo${index}`,
-      ...(index === 0 ? { caption: caption.substring(0, 1024), parse_mode: "HTML" as const } : {}),
+      ...(index === 0 ? { caption, parse_mode: "HTML" as const } : {}),
     }));
     const formData = new FormData();
     formData.append("chat_id", chatId);
@@ -93,15 +112,15 @@ function sendAlbum(chatId: string, photos: Buffer[], caption: string): Promise<S
       formData.append(`photo${index}`, new Blob([new Uint8Array(buffer)]), `photo${index}.jpg`);
     });
     return formData;
-  }, false);
+  }, false, MEDIA_TIMEOUT_MS);
 }
 
 // Photos with the caption, falling back to a text message if they can't be sent
-export async function sendPostToChat(chatId: string, photos: Buffer[], caption: string): Promise<boolean> {
+export async function sendPostToChat(chatId: string, photos: Buffer[], caption: PostCaption): Promise<boolean> {
   const attempts = [
-    ...(photos.length > 1 ? [() => sendAlbum(chatId, photos, caption)] : []),
-    ...(photos.length === 1 ? [() => sendPhoto(chatId, photos[0], caption)] : []),
-    () => sendText(chatId, caption),
+    ...(photos.length > 1 ? [() => sendAlbum(chatId, photos, caption.media)] : []),
+    ...(photos.length === 1 ? [() => sendPhoto(chatId, photos[0], caption.media)] : []),
+    () => sendText(chatId, caption.text),
   ];
   for (const attempt of attempts) {
     const result = await attempt();

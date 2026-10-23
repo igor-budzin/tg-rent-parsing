@@ -128,12 +128,10 @@ async function processQueue(client: TelegramClient): Promise<void> {
   }
 }
 
+// Runs even with PARSE_RETRY_ATTEMPTS=0: posts whose handling failed, or that arrived while too
+// many were in progress, are deferred to this queue too (message-handler.ts). With 0 they get one
+// more try, without the AI if it fails again.
 export function startParseRetryQueue(client: TelegramClient): void {
-  if (PARSE_RETRY_ATTEMPTS <= 0) {
-    log("INFO", "AI parse retries disabled (PARSE_RETRY_ATTEMPTS=0)");
-    return;
-  }
-
   let running = false;
   const tick = async () => {
     if (running) return;
@@ -149,5 +147,5 @@ export function startParseRetryQueue(client: TelegramClient): void {
 
   void tick();
   setInterval(tick, QUEUE_CHECK_INTERVAL_MS);
-  log("INFO", `AI parse retry queue started: up to ${PARSE_RETRY_ATTEMPTS} retries per post`);
+  log("INFO", `Parse retry queue started: up to ${PARSE_RETRY_ATTEMPTS} AI retries per post`);
 }

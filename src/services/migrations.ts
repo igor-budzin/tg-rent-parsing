@@ -273,6 +273,25 @@ const MIGRATIONS: Migration[] = [
       });
     },
   },
+  {
+    id: 3,
+    name: "admin_roles_and_2fa",
+    up: async (db) => {
+      await db.query(`
+        -- Owners manage admins and the Telegram reader login; admins do everything else
+        ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('owner', 'admin'));
+        -- A disabled admin can't sign in; the row stays for the audit log
+        ALTER TABLE admins ADD COLUMN disabled_at TIMESTAMPTZ;
+        -- TOTP secret (base32); set but not enabled while the admin is still setting up their app
+        ALTER TABLE admins ADD COLUMN totp_secret TEXT;
+        ALTER TABLE admins ADD COLUMN totp_enabled_at TIMESTAMPTZ;
+        -- Last time step a code was accepted for, so a code can't be used twice
+        ALTER TABLE admins ADD COLUMN totp_last_step BIGINT;
+        -- The first admin, created from the env vars, becomes the owner
+        UPDATE admins SET role = 'owner' WHERE id = (SELECT MIN(id) FROM admins);
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(): Promise<void> {

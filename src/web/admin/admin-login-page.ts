@@ -21,6 +21,7 @@ ${PAGE_HEAD}
   <p class="hint">Вхід для адміністраторів сервісу.</p>
   <input name="login" autocomplete="username" placeholder="Логін" aria-label="Логін" required>
   <input name="password" type="password" autocomplete="current-password" placeholder="Пароль" aria-label="Пароль" required>
+  <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Код із застосунку автентифікації" aria-label="Код двофакторного входу" hidden>
   <p class="error" id="error"></p>
   <button type="submit">Увійти</button>
 </form>
@@ -35,9 +36,19 @@ ${PAGE_HEAD}
       const res = await fetch(location.origin + "/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ login: form.elements.login.value, password: form.elements.password.value }),
+        body: JSON.stringify({
+          login: form.elements.login.value,
+          password: form.elements.password.value,
+          code: form.elements.code.value,
+        }),
       });
       const data = await res.json().catch(() => ({}));
+      // Password accepted, 2FA is on: show the code field and wait for the code
+      if (data.codeRequired) {
+        form.elements.code.hidden = false;
+        form.elements.code.required = true;
+        form.elements.code.focus();
+      }
       if (!res.ok) throw new Error(data.error || res.statusText);
       location.href = "/";
     } catch (err) {

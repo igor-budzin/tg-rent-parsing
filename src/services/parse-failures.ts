@@ -12,6 +12,7 @@ export type ParseFailureReason =
   | "nothing_extracted" // valid JSON, but no listing fields
   | "cooldown" // skipped: AI paused after rate limits or outages
   | "no_models" // skipped: none of the configured models exist on OpenRouter
+  | "backlog" // skipped: too many posts waiting for the AI, sent unparsed to keep delivery fast
   | "error"; // anything else
 
 // The post the model was asked to parse

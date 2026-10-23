@@ -106,6 +106,11 @@ function startCooldown(error: InstanceType<typeof OpenAI.APIError>): void {
 
 // Spaces request starts so bursts of posts stay under the per-minute limit
 let nextRequestAt = 0;
+
+// How long a request made now would wait for its slot
+export function aiQueueWaitMs(): number {
+  return Math.max(0, nextRequestAt - Date.now());
+}
 async function throttle(): Promise<void> {
   if (OPENROUTER_MAX_RPM <= 0) return;
   const now = Date.now();

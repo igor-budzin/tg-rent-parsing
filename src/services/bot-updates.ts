@@ -1,6 +1,6 @@
 import { APP_URL, PAYMENT_INSTRUCTIONS, SUPPORT_CONTACT } from "../config.js";
 import { log } from "../utils/logger.js";
-import { callBotApi, escapeHtml, sendBotText } from "./bot-api.js";
+import { BOT_API_TIMEOUT_MS, callBotApi, escapeHtml, sendBotText } from "./bot-api.js";
 import { upsertTelegramUser, markBotBlocked, setNotificationsEnabled, User, displayName } from "./users.js";
 import { ensureAccount, previewInvite, acceptInvite, listMembers, getMembership, Role } from "./accounts.js";
 import { getSubscriptionStatus } from "./subscriptions.js";
@@ -222,11 +222,12 @@ export async function startBotUpdatesPolling(): Promise<void> {
 
   while (true) {
     try {
-      const updates = await callBotApi<TelegramUpdate[]>("getUpdates", {
-        offset,
-        timeout: POLL_TIMEOUT_SEC,
-        allowed_updates: ["message", "callback_query", "my_chat_member"],
-      });
+      // Long poll: Telegram holds the request up to POLL_TIMEOUT_SEC, so allow for that
+      const updates = await callBotApi<TelegramUpdate[]>(
+        "getUpdates",
+        { offset, timeout: POLL_TIMEOUT_SEC, allowed_updates: ["message", "callback_query", "my_chat_member"] },
+        POLL_TIMEOUT_SEC * 1000 + BOT_API_TIMEOUT_MS
+      );
 
       for (const update of updates) {
         offset = update.update_id + 1;

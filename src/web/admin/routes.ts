@@ -41,14 +41,23 @@ import {
   createSession,
   resolveSession,
   destroySession,
-  checkAdminPassword,
+  checkAdminLogin,
   isLoginThrottled,
   recordFailedLogin,
   FAILED_LOGIN_LIMIT_PER_ACCOUNT,
+  getAdmin,
   listAdmins,
   createAdmin,
   changeAdminPassword,
+  setAdminRole,
+  setAdminDisabled,
+  startTotpSetup,
+  enableTotp,
+  disableTotp,
+  resetTotp,
+  Admin,
 } from "../../services/auth.js";
+import QRCode from "qrcode";
 import {
   sendJson,
   sendHtml,
@@ -95,25 +104,33 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
   }
-  const { login, password } = await readJson(req);
+  const { login, password, code } = await readJson(req);
   const loginKey = typeof login === "string" ? `admin-login:${login.trim().toLowerCase()}` : null;
   if (loginKey && isLoginThrottled(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT)) {
     log("WARN", "Admin login throttled for this login", { ip, login });
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
   }
-  const adminId = typeof login === "string" && typeof password === "string"
-    ? await checkAdminPassword(login, password)
-    : null;
-  if (!adminId) {
+  const result = typeof login === "string" && typeof password === "string"
+    ? await checkAdminLogin(login, password, typeof code === "string" && code.trim() ? code : undefined)
+    : { error: "invalid" as const };
+  if ("error" in result) {
+    // The password was right: ask for the code without counting a failed attempt
+    if (result.error === "code_required") {
+      sendJson(res, 401, { error: "Введіть код із застосунку автентифікації", codeRequired: true });
+      return;
+    }
     recordFailedLogin(`admin:${ip}`);
     if (loginKey) recordFailedLogin(loginKey);
     log("WARN", "Failed admin login", { ip, login: typeof login === "string" ? login : undefined });
-    sendJson(res, 401, { error: "Невірний логін або пароль" });
+    // Same answer for a wrong password, a wrong code and a disabled admin
+    sendJson(res, 401, { error: typeof code === "string" && code.trim() ? "Невірний логін, пароль або код" : "Невірний логін або пароль" });
     return;
   }
+  const { adminId } = result;
   const session = await createSession("admin", adminId);
   log("INFO", "Admin logged in", { adminId, ip });
+  await audit({ type: "admin", id: adminId }, "admin.login", { type: "admin", id: adminId }, { ip });
   res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, COOKIE, session.token, session.maxAgeSec) });
   res.end(JSON.stringify({ ok: true }));
 }
@@ -122,9 +139,13 @@ async function handleAuthorized(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   route: string,
-  actor: Actor
+  admin: Admin
 ): Promise<void> {
   const url = requestUrl(req);
+  const actor: Actor = { type: "admin", id: admin.id };
+  const requireOwner = () => {
+    if (admin.role !== "owner") throw new HttpError(403, "Доступно лише власнику");
+  };
 
   switch (route) {
     // --- Telegram reader session ---
@@ -145,7 +166,9 @@ async function handleAuthorized(
       return;
     }
 
+    // Logging the reader in gives control of a Telegram account, so only owners can do it
     case "POST /api/login": {
+      requireOwner();
       const { method, phone } = await readJson(req);
       if (method !== "qr" && method !== "phone") {
         sendJson(res, 400, { error: "Невідомий спосіб входу" });
@@ -157,6 +180,7 @@ async function handleAuthorized(
     }
 
     case "POST /api/submit": {
+      requireOwner();
       const { value } = await readJson(req);
       const ok = typeof value === "string" && submitInput(value.trim());
       sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: "Немає чого надсилати" });
@@ -164,6 +188,7 @@ async function handleAuthorized(
     }
 
     case "POST /api/cancel":
+      requireOwner();
       await cancelLogin();
       sendJson(res, 200, { ok: true });
       return;
@@ -335,10 +360,11 @@ async function handleAuthorized(
     }
 
     case "GET /api/admins":
-      sendJson(res, 200, await listAdmins());
+      sendJson(res, 200, { me: admin, admins: await listAdmins() });
       return;
 
     case "POST /api/admins": {
+      requireOwner();
       const { login, password } = await readJson(req);
       const error = await createAdmin(String(login ?? ""), String(password ?? ""));
       if (!error) {
@@ -348,9 +374,63 @@ async function handleAuthorized(
       return;
     }
 
+    case "POST /api/admins/role": {
+      requireOwner();
+      const { adminId, role } = await readJson(req);
+      const id = requireString(adminId, "адміністратора");
+      const error = await setAdminRole(admin.id, id, role);
+      if (!error) await audit(actor, "admin.role_changed", { type: "admin", id }, { role });
+      sendResult(res, error);
+      return;
+    }
+
+    case "POST /api/admins/disabled": {
+      requireOwner();
+      const { adminId, disabled } = await readJson(req);
+      if (typeof disabled !== "boolean") throw new HttpError(400, "Некоректне значення");
+      const id = requireString(adminId, "адміністратора");
+      const error = await setAdminDisabled(admin.id, id, disabled);
+      if (!error) await audit(actor, disabled ? "admin.disabled" : "admin.enabled", { type: "admin", id });
+      sendResult(res, error);
+      return;
+    }
+
+    case "POST /api/admins/totp/reset": {
+      requireOwner();
+      const id = requireString((await readJson(req)).adminId, "адміністратора");
+      const error = await resetTotp(admin.id, id);
+      if (!error) await audit(actor, "admin.totp_reset", { type: "admin", id });
+      sendResult(res, error);
+      return;
+    }
+
     case "POST /api/admins/password": {
       const { password } = await readJson(req);
-      sendResult(res, await changeAdminPassword(actor.id!, String(password ?? "")));
+      const error = await changeAdminPassword(admin.id, String(password ?? ""));
+      if (!error) await audit(actor, "admin.password_changed", { type: "admin", id: admin.id });
+      sendResult(res, error);
+      return;
+    }
+
+    // --- Own two-factor sign-in ---
+    case "POST /api/admins/totp/setup": {
+      const setup = await startTotpSetup(admin.id);
+      if (typeof setup === "string") throw new HttpError(400, setup);
+      sendJson(res, 200, { secret: setup.secret, qrDataUrl: await QRCode.toDataURL(setup.url) });
+      return;
+    }
+
+    case "POST /api/admins/totp/enable": {
+      const error = await enableTotp(admin.id, String((await readJson(req)).code ?? ""));
+      if (!error) await audit(actor, "admin.totp_enabled", { type: "admin", id: admin.id });
+      sendResult(res, error);
+      return;
+    }
+
+    case "POST /api/admins/totp/disable": {
+      const error = await disableTotp(admin.id, String((await readJson(req)).code ?? ""));
+      if (!error) await audit(actor, "admin.totp_disabled", { type: "admin", id: admin.id });
+      sendResult(res, error);
       return;
     }
 
@@ -382,7 +462,9 @@ export async function handleAdminRequest(req: http.IncomingMessage, res: http.Se
   }
 
   const adminId = await resolveSession("admin", getCookie(req, COOKIE));
-  if (!adminId) {
+  // Re-read on every request, so disabling an admin or changing their role applies at once
+  const admin = adminId ? await getAdmin(adminId) : null;
+  if (!admin || admin.disabled) {
     if (req.method === "GET" && PAGES[path]) redirect(res, "/login");
     else sendJson(res, 401, { error: "Потрібно увійти" });
     return;
@@ -392,5 +474,5 @@ export async function handleAdminRequest(req: http.IncomingMessage, res: http.Se
     sendHtml(res, PAGES[path]);
     return;
   }
-  await handleAuthorized(req, res, route, { type: "admin", id: adminId });
+  await handleAuthorized(req, res, route, admin);
 }

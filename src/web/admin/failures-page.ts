@@ -99,6 +99,7 @@ ${PAGE_HEAD}
     nothing_extracted: { label: "Нічого не знайдено", tone: "warn" },
     cooldown: { label: "Пауза AI", tone: "off" },
     no_models: { label: "Немає моделей", tone: "err" },
+    backlog: { label: "Черга AI", tone: "off" },
   };
 
   const list = document.getElementById("list");

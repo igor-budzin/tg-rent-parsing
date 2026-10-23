@@ -1,22 +1,27 @@
-FROM node:20-alpine
+# Node 24 is the current LTS line (security fixes until 2028-04); 20 reached end-of-life on 2026-04-30
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm ci --only=production=false
-
-# Copy source code
 COPY tsconfig.json ./
 COPY src ./src
-
-# Build TypeScript
 RUN npm run build
 
-# Remove dev dependencies after build
-RUN npm prune --production
+# Runtime image: compiled code and production dependencies only, no TypeScript toolchain
+FROM node:24-alpine
 
-# Run the app
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+COPY --from=build /app/dist ./dist
+
+# The app needs no write access to its own files; run without root
+USER node
+
 CMD ["node", "dist/index.js"]
