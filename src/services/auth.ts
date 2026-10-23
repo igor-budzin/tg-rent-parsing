@@ -119,13 +119,20 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return timingSafeEqual(key, expected);
 }
 
+// Checked when the login doesn't exist, so the response time doesn't reveal which logins do
+let dummyHash: Promise<string> | null = null;
+
 export async function checkAdminPassword(login: string, password: string): Promise<string | null> {
   const result = await pool.query<{ id: string; password_hash: string }>(
     "SELECT id, password_hash FROM admins WHERE lower(login) = lower($1)",
     [login.trim()]
   );
   const admin = result.rows[0];
-  if (!admin || !(await verifyPassword(password, admin.password_hash))) return null;
+  if (!admin) {
+    await verifyPassword(password, await (dummyHash ??= hashPassword(randomBytes(16).toString("hex"))));
+    return null;
+  }
+  if (!(await verifyPassword(password, admin.password_hash))) return null;
   await pool.query("UPDATE admins SET last_login_at = NOW() WHERE id = $1", [admin.id]);
   return admin.id;
 }
@@ -183,27 +190,52 @@ export async function bootstrapAdmin(): Promise<void> {
 
 // --- Brute-force protection for login endpoints ---
 
-const FAILED_LOGIN_LIMIT = 10;
+// Per client IP
+export const FAILED_LOGIN_LIMIT = 10;
+// Per admin login, against guessing spread over many IPs; higher, since anyone can use it up to
+// lock that admin out for the rest of the window
+export const FAILED_LOGIN_LIMIT_PER_ACCOUNT = 30;
 const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+// Bounds memory when an attacker cycles through keys (IPs, made-up logins)
+const MAX_TRACKED_KEYS = 10_000;
 const failedLogins = new Map<string, { count: number; firstAt: number }>();
 
-export function isLoginThrottled(key: string): boolean {
+function isExpired(entry: { firstAt: number }, now: number): boolean {
+  return now - entry.firstAt > FAILED_LOGIN_WINDOW_MS;
+}
+
+export function isLoginThrottled(key: string, limit = FAILED_LOGIN_LIMIT): boolean {
   const entry = failedLogins.get(key);
   if (!entry) return false;
-  if (Date.now() - entry.firstAt > FAILED_LOGIN_WINDOW_MS) {
+  if (isExpired(entry, Date.now())) {
     failedLogins.delete(key);
     return false;
   }
-  return entry.count >= FAILED_LOGIN_LIMIT;
+  return entry.count >= limit;
+}
+
+function makeRoom(now: number): void {
+  for (const [key, entry] of failedLogins) {
+    if (isExpired(entry, now)) failedLogins.delete(key);
+  }
+  // Still nearly full: drop the oldest tenth (a Map iterates in insertion order), so a flood of
+  // new keys doesn't rescan the whole map on every request
+  for (const key of failedLogins.keys()) {
+    if (failedLogins.size < MAX_TRACKED_KEYS * 0.9) break;
+    failedLogins.delete(key);
+  }
 }
 
 export function recordFailedLogin(key: string): void {
+  const now = Date.now();
   const entry = failedLogins.get(key);
-  if (!entry || Date.now() - entry.firstAt > FAILED_LOGIN_WINDOW_MS) {
-    failedLogins.set(key, { count: 1, firstAt: Date.now() });
-  } else {
+  if (entry && !isExpired(entry, now)) {
     entry.count++;
+    return;
   }
+  failedLogins.delete(key);
+  if (failedLogins.size >= MAX_TRACKED_KEYS) makeRoom(now);
+  failedLogins.set(key, { count: 1, firstAt: now });
 }
 
 export async function deleteExpiredAuthRows(): Promise<void> {

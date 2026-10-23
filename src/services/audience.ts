@@ -1,5 +1,5 @@
 import { pool } from "./db.js";
-import { Filters, toFilters } from "./filters.js";
+import { Filters, keywordProblem, toFilters } from "./filters.js";
 import { log } from "../utils/logger.js";
 
 // Who gets notifications right now: active accounts with a current subscription and their
@@ -45,7 +45,10 @@ async function load(): Promise<AudienceAccount[]> {
   for (const row of result.rows) {
     let account = byAccount.get(row.account_id);
     if (!account) {
-      account = { accountId: row.account_id, filters: toFilters(row), recipients: [] };
+      const filters = toFilters(row);
+      // Keywords saved before keywordProblem existed would otherwise still match every post
+      filters.keywords = filters.keywords.filter((k) => !keywordProblem(k));
+      account = { accountId: row.account_id, filters, recipients: [] };
       byAccount.set(row.account_id, account);
     }
     account.recipients.push({ userId: row.user_id, chatId: row.chat_id });

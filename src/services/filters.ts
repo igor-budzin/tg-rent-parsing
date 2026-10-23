@@ -69,6 +69,26 @@ export function toFilters(row: any): Filters {
   };
 }
 
+// Keywords are matched as substrings, so a short or generic one matches nearly every post in a
+// rental channel: every such post would be sent to the AI and to that account. They're refused
+// when added, and ignored when they were stored before this check existed.
+const MIN_KEYWORD_LETTERS = 3;
+const GENERIC_KEYWORDS = new Set([
+  "оренда", "аренда", "здам", "сдам", "здаю", "сдаю", "здається", "сдается",
+  "продам", "продаж", "продажа", "квартира", "квартиру", "квартири", "квартиры",
+  "кімната", "кімнату", "комната", "комнату", "грн", "uah", "usd", "eur",
+]);
+
+// Why a keyword can't be used, or null when it's fine
+export function keywordProblem(keyword: string): string | null {
+  const letters = keyword.match(/\p{L}/gu)?.length ?? 0;
+  if (letters < MIN_KEYWORD_LETTERS) return `Ключове слово має містити щонайменше ${MIN_KEYWORD_LETTERS} літери`;
+  if (GENERIC_KEYWORDS.has(keyword.trim().toLowerCase())) {
+    return "Надто загальне слово — воно є майже в кожному оголошенні. Вкажіть район, вулицю чи ЖК";
+  }
+  return null;
+}
+
 export function findMatchingKeywords(text: string, keywords: string[]): string[] {
   const lowerText = text.toLowerCase();
   return keywords.filter((keyword) => lowerText.includes(keyword.toLowerCase()));

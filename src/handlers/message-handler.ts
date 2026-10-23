@@ -2,7 +2,7 @@ import { TelegramClient, Api } from "telegram";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { log } from "../utils/logger.js";
 import { findWatchedChannel, getResolvedChannels } from "../services/watch-config.js";
-import { CHECK_INTERVAL_MS, PARSE_RETRY_ATTEMPTS, PARSE_RETRY_DELAY_MS } from "../config.js";
+import { AI_DAILY_PARSES_PER_ACCOUNT, CHECK_INTERVAL_MS, PARSE_RETRY_ATTEMPTS, PARSE_RETRY_DELAY_MS } from "../config.js";
 import { sendPostToChat } from "../services/notification.js";
 import { parsePost, isAiEnabled } from "../services/post-parser.js";
 import { enqueuePost } from "../services/parse-queue.js";
@@ -170,6 +170,34 @@ export async function deliverPost(
   if (sentCount > 0) recordPostStat(channelTitle, "sent");
 }
 
+// AI parses charged to each account today, see AI_DAILY_PARSES_PER_ACCOUNT. In memory: a
+// restart resets it, which at worst lets an account spend its budget twice in a day.
+let aiBudgetDay = "";
+const aiParsesToday = new Map<string, number>();
+
+// Charges the parse to every account that wants the post and still has budget; false when none
+// has, so the post goes out unparsed. Retries from the parse queue aren't charged again.
+function takeAiBudget(accountIds: string[]): boolean {
+  if (AI_DAILY_PARSES_PER_ACCOUNT <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== aiBudgetDay) {
+    aiBudgetDay = today;
+    aiParsesToday.clear();
+  }
+  const withBudget = accountIds.filter((id) => (aiParsesToday.get(id) ?? 0) < AI_DAILY_PARSES_PER_ACCOUNT);
+  for (const id of withBudget) {
+    const used = (aiParsesToday.get(id) ?? 0) + 1;
+    aiParsesToday.set(id, used);
+    if (used === AI_DAILY_PARSES_PER_ACCOUNT) {
+      log("WARN", "Account used its daily AI parse budget, its posts are sent unparsed until tomorrow (UTC)", {
+        accountId: id,
+        limit: AI_DAILY_PARSES_PER_ACCOUNT,
+      });
+    }
+  }
+  return withBudget.length > 0;
+}
+
 // A post the AI fails to parse goes to the parse queue and is retried later;
 // it's sent unparsed only when retries are off or the queue can't be written
 async function handleNotification(
@@ -184,6 +212,18 @@ async function handleNotification(
     deliverPost(client, message, channelEntity, channelTitle, matchedKeywords, messageLink, parsed);
 
   if (!isAiEnabled()) return deliver(null);
+
+  const wantedBy = (await getAudience())
+    .filter((account) => findMatchingKeywords(message.message, account.filters.keywords).length > 0)
+    .map((account) => account.accountId);
+  if (!takeAiBudget(wantedBy)) {
+    log("INFO", "Post sent unparsed: every account that wants it used its daily AI budget", {
+      channel: channelTitle,
+      messageId: message.id,
+      accounts: wantedBy,
+    });
+    return deliver(null);
+  }
 
   const queueOnFailure = PARSE_RETRY_ATTEMPTS > 0;
   const parsed = await parsePost(message.message, {

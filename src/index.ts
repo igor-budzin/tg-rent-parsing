@@ -7,7 +7,9 @@ import {
   PORT,
   APP_URL,
   ADMIN_URL,
+  TELEGRAM_SESSION_KEY,
 } from "./config.js";
+import { sessionKeyError } from "./services/session-store.js";
 import { log } from "./utils/logger.js";
 import { createAndConnectClient, logCurrentUser } from "./services/telegram-client.js";
 import { initDb, closeDb } from "./services/db.js";
@@ -39,6 +41,12 @@ function validateConfig(): void {
     process.exit(1);
   }
 
+  const keyError = sessionKeyError();
+  if (keyError) {
+    log("ERROR", keyError);
+    process.exit(1);
+  }
+
   for (const [name, value] of [["APP_URL", APP_URL], ["ADMIN_URL", ADMIN_URL]]) {
     try {
       new URL(value);
@@ -55,6 +63,7 @@ function logConfiguration(): void {
     API_HASH: API_HASH ? `${API_HASH.substring(0, 4)}... (set)` : "NOT SET",
     DATABASE_URL: DATABASE_URL ? "(set)" : "NOT SET",
     ADMIN_PASSWORD: ADMIN_PASSWORD ? "(set)" : "NOT SET",
+    TELEGRAM_SESSION_KEY: TELEGRAM_SESSION_KEY ? "(set)" : "NOT SET",
     PORT,
     APP_URL,
     ADMIN_URL,

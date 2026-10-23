@@ -2,6 +2,7 @@ import { pool, Db } from "./db.js";
 import {
   Filters,
   MAX_ROOMS,
+  keywordProblem,
   normalizeFloor,
   normalizePrice,
   normalizeRooms,
@@ -46,6 +47,8 @@ export async function addKeyword(accountId: string, input: string): Promise<stri
   const keyword = input.trim();
   if (!keyword) return "Ключове слово порожнє";
   if (keyword.length > 100) return "Ключове слово задовге";
+  const problem = keywordProblem(keyword);
+  if (problem) return problem;
   const { keywords } = await getFilters(accountId);
   if (keywords.some((k) => k.toLowerCase() === keyword.toLowerCase())) return "Таке ключове слово вже є";
   const { maxKeywords } = await getAccountLimits(accountId);

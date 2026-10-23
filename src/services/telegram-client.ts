@@ -48,6 +48,10 @@ export async function createAndConnectClient(): Promise<TelegramClient> {
     const client = await tryConnectWithSession(source.session);
     if (client) {
       await saveSession(client.session.save() as unknown as string);
+      if (SESSION_STRING_ENV) {
+        // A copy of the session in env is readable by anyone who can see the service's settings
+        log("WARN", "SESSION_STRING is set; the session is now saved in the database, remove it from env");
+      }
       return client;
     }
     if (source.name === "database") await deleteSession();

@@ -1,4 +1,5 @@
 import http from "node:http";
+import { TRUSTED_PROXY_HOPS } from "../config.js";
 
 // Request and response helpers shared by the user app and the admin app
 
@@ -57,8 +58,16 @@ function isHttps(req: http.IncomingMessage): boolean {
   return req.headers["x-forwarded-proto"]?.toString().split(",")[0].trim() === "https";
 }
 
+// Proxies append the address they saw, so only the rightmost TRUSTED_PROXY_HOPS entries can be
+// trusted; anything left of them is whatever the client sent
 export function clientIp(req: http.IncomingMessage): string {
-  return req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+  const socketIp = req.socket.remoteAddress || "unknown";
+  if (TRUSTED_PROXY_HOPS <= 0) return socketIp;
+  const hops = (req.headers["x-forwarded-for"]?.toString() ?? "")
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
+  return hops[hops.length - TRUSTED_PROXY_HOPS] || socketIp;
 }
 
 export function getCookie(req: http.IncomingMessage, name: string): string | undefined {

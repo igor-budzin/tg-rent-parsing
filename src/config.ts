@@ -10,6 +10,10 @@ export const BOT_TOKEN = process.env.BOT_TOKEN || "";
 // Postgres connection string
 export const DATABASE_URL = process.env.DATABASE_URL || "";
 
+// 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts the Telegram reader session
+// stored in the database; without it the session is stored as plain text.
+export const TELEGRAM_SESSION_KEY = process.env.TELEGRAM_SESSION_KEY || "";
+
 // Channels and keywords are managed in the web UI. These env vars are only used once,
 // to seed the database on first start (comma-separated).
 export const ENV_CHANNELS: string[] = (process.env.CHANNELS_TO_WATCH || "")
@@ -30,6 +34,10 @@ export const PORT = parseInt(process.env.PORT || "3000");
 // Public URLs of the user app and the admin app; links sent by the bot point to APP_URL
 export const APP_URL = (process.env.APP_URL || `http://app.localhost:${PORT}`).replace(/\/+$/, "");
 export const ADMIN_URL = (process.env.ADMIN_URL || `http://admin.localhost:${PORT}`).replace(/\/+$/, "");
+// Reverse proxies in front of the app that append to X-Forwarded-For (Railway's edge: 1).
+// The client IP is taken this many entries from the right; the rest of the header is client-controlled.
+// 0 ignores the header and uses the socket address.
+export const TRUSTED_PROXY_HOPS = parseInt(process.env.TRUSTED_PROXY_HOPS || "1");
 
 // First admin, created on start when there are no admins yet; later admins are added in the admin app
 export const ADMIN_LOGIN = process.env.ADMIN_LOGIN || "admin";
@@ -55,6 +63,11 @@ export const OPENROUTER_MODELS: string[] = (
   .filter(Boolean);
 // AI requests are spaced to stay under this many per minute; free models allow 20 (0 disables)
 export const OPENROUTER_MAX_RPM = parseInt(process.env.OPENROUTER_MAX_RPM || "16");
+
+// AI parses one account's keywords can trigger per UTC day (OpenRouter's daily caps reset then);
+// past it, posts only that account wants are sent unparsed, so one account can't use up the
+// shared quota (0 disables)
+export const AI_DAILY_PARSES_PER_ACCOUNT = parseInt(process.env.AI_DAILY_PARSES_PER_ACCOUNT || "100");
 
 // Posts the AI failed to parse are retried this many times before being sent unparsed
 export const PARSE_RETRY_ATTEMPTS = parseInt(process.env.PARSE_RETRY_ATTEMPTS || "3");

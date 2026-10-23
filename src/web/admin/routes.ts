@@ -44,6 +44,7 @@ import {
   checkAdminPassword,
   isLoginThrottled,
   recordFailedLogin,
+  FAILED_LOGIN_LIMIT_PER_ACCOUNT,
   listAdmins,
   createAdmin,
   changeAdminPassword,
@@ -95,11 +96,18 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
     return;
   }
   const { login, password } = await readJson(req);
+  const loginKey = typeof login === "string" ? `admin-login:${login.trim().toLowerCase()}` : null;
+  if (loginKey && isLoginThrottled(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT)) {
+    log("WARN", "Admin login throttled for this login", { ip, login });
+    sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
+    return;
+  }
   const adminId = typeof login === "string" && typeof password === "string"
     ? await checkAdminPassword(login, password)
     : null;
   if (!adminId) {
     recordFailedLogin(`admin:${ip}`);
+    if (loginKey) recordFailedLogin(loginKey);
     log("WARN", "Failed admin login", { ip, login: typeof login === "string" ? login : undefined });
     sendJson(res, 401, { error: "Невірний логін або пароль" });
     return;
