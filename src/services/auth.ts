@@ -311,7 +311,7 @@ function isExpired(entry: { firstAt: number }, now: number): boolean {
   return now - entry.firstAt > FAILED_LOGIN_WINDOW_MS;
 }
 
-export function isLoginThrottled(key: string, limit = FAILED_LOGIN_LIMIT): boolean {
+function isLoginThrottled(key: string, limit: number): boolean {
   const entry = failedLogins.get(key);
   if (!entry) return false;
   if (isExpired(entry, Date.now())) {
@@ -333,16 +333,34 @@ function makeRoom(now: number): void {
   }
 }
 
-export function recordFailedLogin(key: string): void {
+function recordFailedLogin(key: string): { count: number; firstAt: number } {
   const now = Date.now();
   const entry = failedLogins.get(key);
   if (entry && !isExpired(entry, now)) {
     entry.count++;
-    return;
+    return entry;
   }
   failedLogins.delete(key);
   if (failedLogins.size >= MAX_TRACKED_KEYS) makeRoom(now);
-  failedLogins.set(key, { count: 1, firstAt: now });
+  const fresh = { count: 1, firstAt: now };
+  failedLogins.set(key, fresh);
+  return fresh;
+}
+
+// Counts the attempt as failed before it's checked, in one synchronous step: otherwise parallel
+// requests would all pass the limit while the slow password check runs. Returns null when the key
+// is over its limit, else a function that takes the attempt back once it turns out not to have
+// failed.
+export function takeLoginAttempt(key: string, limit = FAILED_LOGIN_LIMIT): (() => void) | null {
+  if (isLoginThrottled(key, limit)) return null;
+  const entry = recordFailedLogin(key);
+  let released = false;
+  return () => {
+    // Only while the same window is running; a new window never counted this attempt
+    if (released || failedLogins.get(key) !== entry) return;
+    released = true;
+    entry.count--;
+  };
 }
 
 export async function deleteExpiredAuthRows(): Promise<void> {

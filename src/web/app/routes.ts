@@ -7,8 +7,7 @@ import {
   destroySession,
   verifyTelegramLogin,
   consumeLoginToken,
-  isLoginThrottled,
-  recordFailedLogin,
+  takeLoginAttempt,
 } from "../../services/auth.js";
 import { getUser, upsertTelegramUser, touchLogin, setNotificationsEnabled, displayName, User } from "../../services/users.js";
 import {
@@ -231,13 +230,15 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
     // One-time link sent by the bot's /login and /start
     case "GET /auth/link": {
       const ip = clientIp(req);
-      if (isLoginThrottled(`link:${ip}`)) return loginPage(res, "Забагато спроб. Спробуйте пізніше.", 429);
+      // Counted as failed until the token checks out, see takeLoginAttempt
+      const release = takeLoginAttempt(`link:${ip}`);
+      if (!release) return loginPage(res, "Забагато спроб. Спробуйте пізніше.", 429);
       const userId = await consumeLoginToken(url.searchParams.get("token") ?? "");
       const user = userId ? await getUser(userId) : null;
       if (!user) {
-        recordFailedLogin(`link:${ip}`);
         return loginPage(res, "Посилання для входу недійсне або вже використане. Надішліть боту /login, щоб отримати нове.", 400);
       }
+      release();
       if (user.status === "blocked") return loginPage(res, "Ваш доступ заблоковано. Зверніться до підтримки.", 403);
       redirect(res, "/", { "Set-Cookie": await startSession(req, user) });
       return;

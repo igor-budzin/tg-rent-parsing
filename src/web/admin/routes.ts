@@ -42,8 +42,7 @@ import {
   resolveSession,
   destroySession,
   checkAdminLogin,
-  isLoginThrottled,
-  recordFailedLogin,
+  takeLoginAttempt,
   FAILED_LOGIN_LIMIT_PER_ACCOUNT,
   getAdmin,
   listAdmins,
@@ -101,13 +100,18 @@ function requireString(value: unknown, field: string): string {
 
 async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const ip = clientIp(req);
-  if (isLoginThrottled(`admin:${ip}`)) {
+  // Each attempt counts as failed until it turns out otherwise, see takeLoginAttempt
+  const releaseIp = takeLoginAttempt(`admin:${ip}`);
+  if (!releaseIp) {
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
   }
   const { login, password, code } = await readJson(req);
   const loginKey = typeof login === "string" ? `admin-login:${login.trim().toLowerCase()}` : null;
-  if (loginKey && isLoginThrottled(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT)) {
+  const releaseLogin = loginKey ? takeLoginAttempt(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT) : () => {};
+  if (!releaseLogin) {
+    // Refused before the password was checked, so it isn't a failure for this IP
+    releaseIp();
     log("WARN", "Admin login throttled for this login", { ip, login });
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
@@ -115,14 +119,16 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
   const result = typeof login === "string" && typeof password === "string"
     ? await checkAdminLogin(login, password, typeof code === "string" && code.trim() ? code : undefined)
     : { error: "invalid" as const };
+  // The password was right: a success, or a request for the code, isn't a failed attempt
+  if (!("error" in result) || result.error === "code_required") {
+    releaseIp();
+    releaseLogin();
+  }
   if ("error" in result) {
-    // The password was right: ask for the code without counting a failed attempt
     if (result.error === "code_required") {
       sendJson(res, 401, { error: "Введіть код із застосунку автентифікації", codeRequired: true });
       return;
     }
-    recordFailedLogin(`admin:${ip}`);
-    if (loginKey) recordFailedLogin(loginKey);
     log("WARN", "Failed admin login", { ip, login: typeof login === "string" ? login : undefined });
     // Same answer for a wrong password, a wrong code and a disabled admin
     sendJson(res, 401, { error: typeof code === "string" && code.trim() ? "Невірний логін, пароль або код" : "Невірний логін або пароль" });
