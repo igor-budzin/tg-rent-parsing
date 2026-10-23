@@ -7,6 +7,7 @@ import {
   destroySession,
   verifyTelegramLogin,
   consumeLoginToken,
+  peekLoginToken,
   takeLoginAttempt,
 } from "../../services/auth.js";
 import { getUser, upsertTelegramUser, touchLogin, setNotificationsEnabled, displayName, User } from "../../services/users.js";
@@ -35,13 +36,14 @@ import {
   requestUrl,
   getCookie,
   sessionCookie,
+  sessionCookieName,
   clearCookie,
   clientIp,
   requireId,
   HttpError,
 } from "../http.js";
 import { RateLimiter } from "../../utils/rate-limit.js";
-import { userLoginPageHtml } from "./login-page.js";
+import { userLoginPageHtml, linkConfirmPageHtml } from "./login-page.js";
 import { USER_PAGES_HTML, USER_PAGE_PATHS } from "./dashboard-page.js";
 
 const COOKIE = "session";
@@ -53,7 +55,7 @@ async function startSession(req: http.IncomingMessage, user: User): Promise<stri
   await touchLogin(user.id);
   const session = await createSession("user", user.id);
   log("INFO", "User logged in to the web app", { userId: user.id });
-  return sessionCookie(req, COOKIE, session.token, session.maxAgeSec);
+  return sessionCookie(req, sessionCookieName(req, COOKIE), session.token, session.maxAgeSec);
 }
 
 async function loginPage(res: http.ServerResponse, error?: string, status = 200): Promise<void> {
@@ -227,30 +229,48 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
       return;
     }
 
-    // One-time link sent by the bot's /login and /start
-    case "GET /auth/link": {
+    // One-time link sent by the bot's /login and /start. Opening it only shows whose account it
+    // signs in to; a button (POST) signs in. So a link someone else sends can't quietly sign the
+    // victim in to the sender's account (login CSRF), and link previews don't use it up.
+    case "GET /auth/link":
+    case "POST /auth/link": {
       const ip = clientIp(req);
       // Counted as failed until the token checks out, see takeLoginAttempt
-      const release = takeLoginAttempt(`link:${ip}`);
+      const release = await takeLoginAttempt(`link:${ip}`);
       if (!release) return loginPage(res, "Забагато спроб. Спробуйте пізніше.", 429);
-      const userId = await consumeLoginToken(url.searchParams.get("token") ?? "");
+      const token = url.searchParams.get("token") ?? "";
+      const confirming = req.method === "POST";
+      const userId = confirming ? await consumeLoginToken(token) : await peekLoginToken(token);
       const user = userId ? await getUser(userId) : null;
       if (!user) {
         return loginPage(res, "Посилання для входу недійсне або вже використане. Надішліть боту /login, щоб отримати нове.", 400);
       }
-      release();
+      await release();
       if (user.status === "blocked") return loginPage(res, "Ваш доступ заблоковано. Зверніться до підтримки.", 403);
+      if (!confirming) {
+        sendHtml(res, linkConfirmPageHtml(displayName(user), user.username, token));
+        return;
+      }
       redirect(res, "/", { "Set-Cookie": await startSession(req, user) });
       return;
     }
 
+    // POST only (a form button), so another site can't log users out with a link or an image;
+    // the cross-site check in server.ts rejects a POST from another origin
+    case "POST /logout": {
+      const cookie = sessionCookieName(req, COOKIE);
+      await destroySession(getCookie(req, cookie));
+      redirect(res, "/login", { "Set-Cookie": clearCookie(req, cookie) });
+      return;
+    }
+
+    // Old bookmarks and links: back to the app, signed in as before
     case "GET /logout":
-      await destroySession(getCookie(req, COOKIE));
-      redirect(res, "/login", { "Set-Cookie": clearCookie(req, COOKIE) });
+      redirect(res, "/");
       return;
   }
 
-  const userId = await resolveSession("user", getCookie(req, COOKIE));
+  const userId = await resolveSession("user", getCookie(req, sessionCookieName(req, COOKIE)));
   const user = userId ? await getUser(userId) : null;
   if (!user || user.status === "blocked") {
     if (req.method === "GET" && USER_PAGE_PATHS[url.pathname]) redirect(res, "/login");

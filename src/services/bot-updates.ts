@@ -5,6 +5,7 @@ import { upsertTelegramUser, markBotBlocked, setNotificationsEnabled, User, disp
 import { ensureAccount, previewInvite, acceptInvite, listMembers, getMembership, Role } from "./accounts.js";
 import { getSubscriptionStatus } from "./subscriptions.js";
 import { createLoginToken } from "./auth.js";
+import { RateLimiter } from "../utils/rate-limit.js";
 
 const POLL_TIMEOUT_SEC = 30;
 const RETRY_DELAY_MS = 5000;
@@ -182,7 +183,16 @@ async function handleCallback(query: NonNullable<TelegramUpdate["callback_query"
   }
 }
 
+// Commands and button presses per Telegram user per minute: plenty for a person, but a script
+// can't fill the database with login links and users
+const updateLimiter = new RateLimiter(20, 60_000);
+
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
+  const fromId = update.message?.from?.id ?? update.callback_query?.from.id;
+  if (fromId !== undefined && !updateLimiter.take(String(fromId))) {
+    log("DEBUG", "Bot update ignored: too many from this user", { fromId });
+    return;
+  }
   if (update.my_chat_member) {
     const { chat, new_chat_member } = update.my_chat_member;
     if (chat.type === "private" && new_chat_member.status === "kicked") {

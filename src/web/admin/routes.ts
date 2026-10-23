@@ -14,6 +14,7 @@ import {
   addChannel,
   removeChannel,
   getChannelPhoto,
+  normalizeChannelName,
 } from "../../services/watch-config.js";
 import { countRecipients } from "../../services/audience.js";
 import {
@@ -43,6 +44,7 @@ import {
   destroySession,
   checkAdminLogin,
   takeLoginAttempt,
+  isKnownAdminIp,
   FAILED_LOGIN_LIMIT_PER_ACCOUNT,
   getAdmin,
   listAdmins,
@@ -67,6 +69,7 @@ import {
   requestUrl,
   getCookie,
   sessionCookie,
+  sessionCookieName,
   clearCookie,
   clientIp,
   requireId,
@@ -102,17 +105,21 @@ function requireString(value: unknown, field: string): string {
 async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const ip = clientIp(req);
   // Each attempt counts as failed until it turns out otherwise, see takeLoginAttempt
-  const releaseIp = takeLoginAttempt(`admin:${ip}`);
+  const releaseIp = await takeLoginAttempt(`admin:${ip}`);
   if (!releaseIp) {
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
   }
   const { login, password, code } = await readJson(req);
   const loginKey = typeof login === "string" ? `admin-login:${login.trim().toLowerCase()}` : null;
-  const releaseLogin = loginKey ? takeLoginAttempt(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT) : () => {};
+  const noop = async () => {};
+  let releaseLogin = loginKey ? await takeLoginAttempt(loginKey, FAILED_LOGIN_LIMIT_PER_ACCOUNT) : noop;
+  // The per-login limit is there against guessing from many IPs; the admin's own usual IP gets
+  // past it, so a stranger can't lock them out (see isKnownAdminIp)
+  if (!releaseLogin && typeof login === "string" && (await isKnownAdminIp(login, ip))) releaseLogin = noop;
   if (!releaseLogin) {
     // Refused before the password was checked, so it isn't a failure for this IP
-    releaseIp();
+    await releaseIp();
     log("WARN", "Admin login throttled for this login", { ip, login });
     sendJson(res, 429, { error: "Забагато спроб. Спробуйте пізніше." });
     return;
@@ -123,8 +130,8 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
   // The password was right: a success, or a request for the code, isn't a failed attempt. Wrong
   // codes are limited per admin in the database instead, see checkTotpCode.
   if (!("error" in result) || result.error === "code_required" || result.error === "code_locked") {
-    releaseIp();
-    releaseLogin();
+    await releaseIp();
+    await releaseLogin();
   }
   if ("error" in result) {
     if (result.error === "code_required") {
@@ -145,7 +152,10 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
   const session = await createSession("admin", adminId);
   log("INFO", "Admin logged in", { adminId, ip });
   await audit({ type: "admin", id: adminId }, "admin.login", { type: "admin", id: adminId }, { ip });
-  res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, COOKIE, session.token, session.maxAgeSec) });
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Set-Cookie": sessionCookie(req, sessionCookieName(req, COOKIE), session.token, session.maxAgeSec),
+  });
   res.end(JSON.stringify({ ok: true }));
 }
 
@@ -176,7 +186,11 @@ async function handleAuthorized(
 
     case "GET /api/state": {
       const recipients = await countRecipients().catch(() => null);
-      sendJson(res, 200, { ...getAuthState(), recipients });
+      // The QR code would let whoever scans it first become the reader, and the hint is about the
+      // owner's account: only owners, who run the login, get them
+      const { qrDataUrl, passwordHint, ...state } = getAuthState();
+      const ownerOnly = admin.role === "owner" ? { qrDataUrl, passwordHint } : { loginByOwner: true };
+      sendJson(res, 200, { ...state, ...ownerOnly, recipients });
       return;
     }
 
@@ -231,12 +245,15 @@ async function handleAuthorized(
     case "POST /api/channels": {
       const value = requireString((await readJson(req)).value, "канал");
       const error = await addChannel(value);
+      if (!error) await audit(actor, "channel.added", null, { channel: normalizeChannelName(value) });
       sendResult(res, error, getWatchConfigView());
       return;
     }
 
     case "DELETE /api/channels": {
-      await removeChannel(requireString((await readJson(req)).value, "канал"));
+      const value = requireString((await readJson(req)).value, "канал");
+      await removeChannel(value);
+      await audit(actor, "channel.removed", null, { channel: value });
       sendJson(res, 200, getWatchConfigView());
       return;
     }
@@ -248,6 +265,7 @@ async function handleAuthorized(
 
     case "DELETE /api/parse-failures":
       await clearParseFailures();
+      await audit(actor, "parse_failures.cleared", null);
       sendJson(res, 200, { ok: true });
       return;
 
@@ -257,6 +275,7 @@ async function handleAuthorized(
 
     case "DELETE /api/stats":
       await clearPostStats();
+      await audit(actor, "stats.cleared", null);
       sendJson(res, 200, { ok: true });
       return;
 
@@ -474,13 +493,21 @@ export async function handleAdminRequest(req: http.IncomingMessage, res: http.Se
     await handleLogin(req, res);
     return;
   }
+  // POST only (a form button), so another site can't log admins out with a link or an image;
+  // the cross-site check in server.ts rejects a POST from another origin
+  if (route === "POST /logout") {
+    const cookie = sessionCookieName(req, COOKIE);
+    await destroySession(getCookie(req, cookie));
+    redirect(res, "/login", { "Set-Cookie": clearCookie(req, cookie) });
+    return;
+  }
+  // Old bookmarks and links: back to the app, signed in as before
   if (route === "GET /logout") {
-    await destroySession(getCookie(req, COOKIE));
-    redirect(res, "/login", { "Set-Cookie": clearCookie(req, COOKIE) });
+    redirect(res, "/");
     return;
   }
 
-  const adminId = await resolveSession("admin", getCookie(req, COOKIE));
+  const adminId = await resolveSession("admin", getCookie(req, sessionCookieName(req, COOKIE)));
   // Re-read on every request, so disabling an admin or changing their role applies at once
   const admin = adminId ? await getAdmin(adminId) : null;
   if (!admin || admin.disabled) {

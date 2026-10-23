@@ -1,4 +1,4 @@
-import { BASE_STYLES, BASE_SCRIPT, PAGE_HEAD, MENU_BUTTON } from "../styles.js";
+import { BASE_STYLES, BASE_SCRIPT, PAGE_HEAD, MENU_BUTTON, LOGOUT_BUTTON } from "../styles.js";
 
 // Pages of the user app. They share one layout and one script: everything is rendered from
 // GET /api/me, every change returns the updated state, and each renderer only fills the
@@ -173,7 +173,7 @@ ${PAGE_HEAD}
     ${MENU_BUTTON}
     <div class="menu" id="menu">
       <nav class="tabs" aria-label="Розділи">${nav}</nav>
-      <nav class="user"><span id="who" class="muted"></span><a href="/logout">Вийти</a></nav>
+      <nav class="user"><span id="who" class="muted"></span>${LOGOUT_BUTTON}</nav>
     </div>
   </header>
   <div class="notice" id="notice"></div>

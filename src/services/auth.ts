@@ -97,6 +97,15 @@ export async function createLoginToken(userId: string): Promise<string> {
   return token;
 }
 
+// The user a link is for, without using it up: the link first shows whose account it signs in to
+export async function peekLoginToken(token: string): Promise<string | null> {
+  const result = await pool.query<{ user_id: string }>(
+    "SELECT user_id FROM login_tokens WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()",
+    [sha256(token)]
+  );
+  return result.rows[0]?.user_id ?? null;
+}
+
 export async function consumeLoginToken(token: string): Promise<string | null> {
   const result = await pool.query<{ user_id: string }>(
     `UPDATE login_tokens SET used_at = NOW()
@@ -202,12 +211,12 @@ async function checkTotpCode(adminId: string, secret: string, code: string): Pro
 // 2FA is on, so a stolen session alone can't take the account over. Shares the brute-force limit
 // with the login form, per admin.
 async function reauthenticate(adminId: string, password: string, code: string | undefined): Promise<string | null> {
-  const release = takeLoginAttempt(`admin-reauth:${adminId}`);
+  const release = await takeLoginAttempt(`admin-reauth:${adminId}`);
   if (!release) return "Забагато спроб. Спробуйте пізніше.";
   const result = await pool.query("SELECT password_hash, totp_secret, totp_enabled_at FROM admins WHERE id = $1", [adminId]);
   const row = result.rows[0];
   if (!row || !(await verifyPassword(password, row.password_hash))) return "Невірний поточний пароль";
-  release();
+  await release();
   if (row.totp_enabled_at) {
     if (!code?.trim()) return "Введіть код із застосунку автентифікації";
     const check = await checkTotpCode(adminId, row.totp_secret, code);
@@ -378,68 +387,54 @@ export const FAILED_LOGIN_LIMIT = 10;
 // Per admin login, against guessing spread over many IPs; higher, since anyone can use it up to
 // lock that admin out for the rest of the window
 export const FAILED_LOGIN_LIMIT_PER_ACCOUNT = 30;
-const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
-// Bounds memory when an attacker cycles through keys (IPs, made-up logins)
-const MAX_TRACKED_KEYS = 10_000;
-const failedLogins = new Map<string, { count: number; firstAt: number }>();
+const FAILED_LOGIN_WINDOW_MIN = 15;
 
-function isExpired(entry: { firstAt: number }, now: number): boolean {
-  return now - entry.firstAt > FAILED_LOGIN_WINDOW_MS;
-}
-
-function isLoginThrottled(key: string, limit: number): boolean {
-  const entry = failedLogins.get(key);
-  if (!entry) return false;
-  if (isExpired(entry, Date.now())) {
-    failedLogins.delete(key);
-    return false;
-  }
-  return entry.count >= limit;
-}
-
-function makeRoom(now: number): void {
-  for (const [key, entry] of failedLogins) {
-    if (isExpired(entry, now)) failedLogins.delete(key);
-  }
-  // Still nearly full: drop the oldest tenth (a Map iterates in insertion order), so a flood of
-  // new keys doesn't rescan the whole map on every request
-  for (const key of failedLogins.keys()) {
-    if (failedLogins.size < MAX_TRACKED_KEYS * 0.9) break;
-    failedLogins.delete(key);
-  }
-}
-
-function recordFailedLogin(key: string): { count: number; firstAt: number } {
-  const now = Date.now();
-  const entry = failedLogins.get(key);
-  if (entry && !isExpired(entry, now)) {
-    entry.count++;
-    return entry;
-  }
-  failedLogins.delete(key);
-  if (failedLogins.size >= MAX_TRACKED_KEYS) makeRoom(now);
-  const fresh = { count: 1, firstAt: now };
-  failedLogins.set(key, fresh);
-  return fresh;
-}
-
-// Counts the attempt as failed before it's checked, in one synchronous step: otherwise parallel
-// requests would all pass the limit while the slow password check runs. Returns null when the key
-// is over its limit, else a function that takes the attempt back once it turns out not to have
-// failed.
-export function takeLoginAttempt(key: string, limit = FAILED_LOGIN_LIMIT): (() => void) | null {
-  if (isLoginThrottled(key, limit)) return null;
-  const entry = recordFailedLogin(key);
+// Counts the attempt as failed before it's checked: otherwise parallel requests would all pass the
+// limit while the slow password check runs. Kept in the database, so restarts and redeploys don't
+// reset the counts and every instance shares them. The upsert locks the row, so concurrent
+// attempts on one key are counted one after another. Returns null when the key is over its limit,
+// else a function that takes the attempt back once it turns out not to have failed.
+export async function takeLoginAttempt(key: string, limit = FAILED_LOGIN_LIMIT): Promise<(() => Promise<void>) | null> {
+  const result = await pool.query<{ window_start: string }>(
+    `INSERT INTO login_attempts AS a (key, count, window_start) VALUES ($1, 1, NOW())
+     ON CONFLICT (key) DO UPDATE SET
+       count = CASE WHEN a.window_start <= NOW() - $3 * INTERVAL '1 minute' THEN 1 ELSE a.count + 1 END,
+       window_start = CASE WHEN a.window_start <= NOW() - $3 * INTERVAL '1 minute' THEN NOW() ELSE a.window_start END
+     WHERE a.count < $2 OR a.window_start <= NOW() - $3 * INTERVAL '1 minute'
+     RETURNING window_start::text`,
+    [key, limit, FAILED_LOGIN_WINDOW_MIN]
+  );
+  if (result.rows.length === 0) return null;
+  // As text, to keep the microseconds that a JS Date would drop
+  const windowStart = result.rows[0].window_start;
   let released = false;
-  return () => {
-    // Only while the same window is running; a new window never counted this attempt
-    if (released || failedLogins.get(key) !== entry) return;
+  return async () => {
+    if (released) return;
     released = true;
-    entry.count--;
+    // Only while the same window is running; a new window never counted this attempt
+    await pool.query(
+      "UPDATE login_attempts SET count = count - 1 WHERE key = $1 AND window_start = $2::timestamptz AND count > 0",
+      [key, windowStart]
+    );
   };
+}
+
+// An IP this admin signed in from in the last 30 days (from the audit log). Such logins skip the
+// per-login limit, so a stranger using it up can't lock the admin out of their usual place; the
+// per-IP limit still applies.
+export async function isKnownAdminIp(login: string, ip: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1 FROM admins a JOIN audit_log l
+       ON l.target_type = 'admin' AND l.target_id = a.id AND l.action = 'admin.login'
+     WHERE lower(a.login) = lower($1) AND l.payload->>'ip' = $2 AND l.created_at > NOW() - INTERVAL '30 days'
+     LIMIT 1`,
+    [login.trim(), ip]
+  );
+  return result.rows.length > 0;
 }
 
 export async function deleteExpiredAuthRows(): Promise<void> {
   await pool.query("DELETE FROM sessions WHERE expires_at < NOW()");
   await pool.query("DELETE FROM login_tokens WHERE expires_at < NOW() - INTERVAL '1 day'");
+  await pool.query("DELETE FROM login_attempts WHERE window_start < NOW() - $1 * INTERVAL '1 minute'", [FAILED_LOGIN_WINDOW_MIN]);
 }

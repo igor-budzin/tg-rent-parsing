@@ -1,4 +1,5 @@
 import { pool } from "./db.js";
+import { POST_RETENTION_DAYS } from "../config.js";
 import { log } from "../utils/logger.js";
 
 // Older rows are deleted so the log doesn't grow without bound
@@ -102,12 +103,14 @@ async function insertParseFailure(failure: ParseFailureInput): Promise<void> {
 }
 
 // Run by the hourly cleanup job rather than after every insert, so a burst of failures doesn't
-// also run a trim query each
+// also run a trim query each. Rows hold the full post (phone numbers, names), so they also go
+// once they're older than posts are kept.
 export async function trimParseFailures(): Promise<number> {
   const result = await pool.query(
     `DELETE FROM parse_failures
-     WHERE id < (SELECT id FROM parse_failures ORDER BY id DESC OFFSET $1 LIMIT 1)`,
-    [MAX_STORED_FAILURES - 1]
+     WHERE id < (SELECT id FROM parse_failures ORDER BY id DESC OFFSET $1 LIMIT 1)
+        OR created_at < NOW() - $2 * INTERVAL '1 day'`,
+    [MAX_STORED_FAILURES - 1, POST_RETENTION_DAYS]
   );
   return result.rowCount ?? 0;
 }

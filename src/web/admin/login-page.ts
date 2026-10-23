@@ -88,7 +88,9 @@ ${BASE_SCRIPT}
     qr: (s) => head("Відскануйте QR-код", '<span class="badge warn">вхід</span>') +
       '<p class="hint">Telegram → Налаштування → Пристрої → Підключити пристрій. Код оновлюється кожні 30 с.</p>' +
       errorHtml(s) +
-      (s.qrDataUrl ? '<img class="qr" alt="QR-код для входу в Telegram" src="' + s.qrDataUrl + '">' : '<p class="muted">Створюємо QR-код…</p>') +
+      (s.qrDataUrl ? '<img class="qr" alt="QR-код для входу в Telegram" src="' + s.qrDataUrl + '">'
+        : s.loginByOwner ? '<p class="muted">Вхід виконує власник; QR-код бачить лише він.</p>'
+        : '<p class="muted">Створюємо QR-код…</p>') +
       '<button class="secondary" data-action="cancel">Скасувати</button>',
 
     code: (s) => head("Введіть код входу", '<span class="badge warn">вхід</span>') +

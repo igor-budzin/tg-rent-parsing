@@ -329,6 +329,23 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    id: 6,
+    name: "login_attempts",
+    up: async (db) => {
+      await db.query(`
+        -- Failed sign-in attempts per IP or login in the current window (auth.ts takeLoginAttempt);
+        -- in the database so restarts don't reset them and all instances share them
+        CREATE TABLE login_attempts (
+          key TEXT PRIMARY KEY,
+          count INT NOT NULL,
+          window_start TIMESTAMPTZ NOT NULL
+        );
+        -- Known admin IPs, read from sign-in events (auth.ts isKnownAdminIp)
+        CREATE INDEX audit_log_admin_login ON audit_log (target_id, created_at) WHERE action = 'admin.login';
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(): Promise<void> {

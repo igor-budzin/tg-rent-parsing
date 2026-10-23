@@ -144,7 +144,22 @@ function positiveNumber(value: unknown): number | null {
   return typeof value === "number" && value > 0 ? value : null;
 }
 
-function normalize(raw: unknown): ParsedPost | null {
+// Contacts shown in the bot's card; more are dropped
+const MAX_CONTACTS = 5;
+// Ukrainian numbers have 9 digits after the country code; the model may add or drop the prefix
+const PHONE_TAIL_DIGITS = 9;
+
+// The post is written by strangers and may tell the model to report a different number. A contact
+// is kept only when it really is in the post: the same digits for a phone number, the same
+// @username or link otherwise.
+function contactInPost(contact: string, text: string): boolean {
+  const digits = contact.replace(/\D/g, "");
+  if (digits.length >= 5) return text.replace(/\D/g, "").includes(digits.slice(-PHONE_TAIL_DIGITS));
+  const handle = contact.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, "").replace(/^@/, "").replace(/\/+$/, "");
+  return handle.length > 0 && text.toLowerCase().includes(handle);
+}
+
+function normalize(raw: unknown, text: string): ParsedPost | null {
   if (!raw || typeof raw !== "object") return null;
   const data = raw as Record<string, unknown>;
   const price = data.price as ParsedPost["price"];
@@ -162,7 +177,9 @@ function normalize(raw: unknown): ParsedPost | null {
     totalFloors: positiveNumber(data.totalFloors),
     area: positiveNumber(data.area),
     contacts: Array.isArray(data.contacts)
-      ? data.contacts.filter((c): c is string => typeof c === "string" && c.trim() !== "")
+      ? data.contacts
+          .filter((c): c is string => typeof c === "string" && c.trim() !== "" && contactInPost(c, text))
+          .slice(0, MAX_CONTACTS)
       : [],
   };
 
@@ -238,7 +255,7 @@ async function requestParse(ai: OpenAI, text: string, startIndex: number): Promi
   const choice = completion.choices[0];
   const content = choice?.message?.content ?? null;
   const json = content ? parseJson(content) : null;
-  const parsed = json ? normalize(json) : null;
+  const parsed = json ? normalize(json, text) : null;
   const reason = parsed ? null : !content ? "empty_response" : !json ? "invalid_json" : "nothing_extracted";
   const details = {
     id: completion.id,

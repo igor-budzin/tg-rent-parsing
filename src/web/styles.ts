@@ -103,6 +103,10 @@ export const BASE_STYLES = `
 export const MENU_BUTTON =
   '<button type="button" class="menu-toggle" aria-label="Меню" aria-expanded="false" aria-controls="menu">☰</button>';
 
+// Logout is a POST, so another site can't sign people out with a link; looks like a nav link
+export const LOGOUT_BUTTON =
+  '<form class="logout" method="post" action="/logout"><button type="submit" class="link">Вийти</button></form>';
+
 // Goes into <head> of every page (after the page's own styles, so it wins ties): applies the
 // saved theme before first paint, adds a floating button that cycles system → light → dark
 // (stored per browser in localStorage), collapses the header menu into a hamburger on
@@ -120,6 +124,11 @@ export const PAGE_HEAD = `
   .menu-toggle { display: none; }
   .menu { display: contents; }
   header nav a[aria-current="page"] { font-weight: 600; }
+  form.logout { display: inline; margin: 0; }
+  button.link {
+    padding: 0; border: none; border-radius: 0; background: none; color: var(--accent);
+    font: inherit; text-decoration: underline; cursor: pointer;
+  }
   @media (max-width: 700px) {
     body { padding: 16px 16px 72px; }
     h1 { font-size: 18px; }
@@ -140,7 +149,8 @@ export const PAGE_HEAD = `
     header .menu nav + nav { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
     header .menu nav > * { display: block; padding: 10px 12px; border-radius: 8px; }
     header .menu nav > :empty { display: none; }
-    header .menu nav a { color: var(--text); text-decoration: none; }
+    header .menu nav a, header .menu nav button.link { color: var(--text); text-decoration: none; }
+    header .menu nav button.link { width: 100%; text-align: left; }
     header .menu nav a[aria-current="page"] { background: var(--accent); color: var(--accent-text, #fff); }
   }
 </style>

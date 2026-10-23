@@ -4,6 +4,36 @@ function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+// Opened from the bot's one-time link: names the account first, signs in only on the button. No
+// script needed; the form posts back to the same URL, token included.
+export function linkConfirmPageHtml(name: string, username: string | null, token: string): string {
+  const who = esc(name) + (username && `@${username}` !== name ? ` <span class="muted">@${esc(username)}</span>` : "");
+  return `<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вхід — сповіщення про оренду</title>
+<style>
+${BASE_STYLES}
+  body { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { width: 100%; max-width: 420px; text-align: center; }
+</style>
+${PAGE_HEAD}
+</head>
+<body>
+<main class="card">
+  <h1>Вхід у веб-кабінет</h1>
+  <p>Увійти як <b>${who}</b>?</p>
+  <form method="post" action="/auth/link?token=${esc(encodeURIComponent(token))}">
+    <button type="submit">Увійти</button>
+  </form>
+  <p class="hint">Не ваш акаунт? Закрийте сторінку й надішліть боту <b>/login</b>, щоб отримати власне посилання.</p>
+</main>
+</body>
+</html>`;
+}
+
 // Sign-in through Telegram's OAuth page in the top window: it returns to /login with the signed
 // user data in #tgAuthResult, which this page POSTs to /auth/telegram as JSON. Being a same-origin
 // JSON POST, another site can't make the browser sign in to someone else's account (login CSRF),

@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { ADMIN_URL, APP_URL, TRUSTED_PROXY_HOPS } from "../config.js";
+import { log } from "../utils/logger.js";
 
 // Request and response helpers shared by the user app and the admin app
 
@@ -99,6 +100,8 @@ export function isHttps(req: http.IncomingMessage): boolean {
 
 // Proxies append the address they saw, so only the rightmost TRUSTED_PROXY_HOPS entries can be
 // trusted; anything left of them is whatever the client sent
+let warnedMissingProxy = false;
+
 export function clientIp(req: http.IncomingMessage): string {
   const socketIp = req.socket.remoteAddress || "unknown";
   if (TRUSTED_PROXY_HOPS <= 0) return socketIp;
@@ -106,15 +109,38 @@ export function clientIp(req: http.IncomingMessage): string {
     .split(",")
     .map((ip) => ip.trim())
     .filter(Boolean);
+  // A proxy always adds its entry, so fewer entries mean requests reach the app directly. Then the
+  // header is whatever the client sent, and anyone could pick a new IP to dodge login limits.
+  if (hops.length < TRUSTED_PROXY_HOPS && !warnedMissingProxy) {
+    warnedMissingProxy = true;
+    log("WARN", "Request without the expected X-Forwarded-For entries: if nothing sits in front of the app, set TRUSTED_PROXY_HOPS=0", {
+      trustedProxyHops: TRUSTED_PROXY_HOPS,
+      entries: hops.length,
+    });
+  }
   return hops[hops.length - TRUSTED_PROXY_HOPS] || socketIp;
 }
 
 export function getCookie(req: http.IncomingMessage, name: string): string | undefined {
   for (const part of (req.headers.cookie ?? "").split(";")) {
     const index = part.indexOf("=");
-    if (index > 0 && part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim());
+    if (index > 0 && part.slice(0, index).trim() === name) {
+      // A malformed value (e.g. "%zz") counts as no cookie rather than a 500
+      try {
+        return decodeURIComponent(part.slice(index + 1).trim());
+      } catch {
+        return undefined;
+      }
+    }
   }
   return undefined;
+}
+
+// Over HTTPS session cookies get the __Host- prefix: browsers then only accept them with Secure,
+// Path=/ and no Domain, so a sibling subdomain can't plant one. The prefix needs HTTPS, so plain
+// HTTP (local development) keeps the bare name.
+export function sessionCookieName(req: http.IncomingMessage, base: string): string {
+  return isHttps(req) ? `__Host-${base}` : base;
 }
 
 // Host-only cookie (no Domain), so the user app and the admin app never share sessions
