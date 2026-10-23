@@ -10,8 +10,12 @@ export const BOT_TOKEN = process.env.BOT_TOKEN || "";
 // Postgres connection string
 export const DATABASE_URL = process.env.DATABASE_URL || "";
 
+// Set by the Dockerfile; stricter checks on start (e.g. TELEGRAM_SESSION_KEY is required)
+export const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
 // 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts the Telegram reader session
-// stored in the database; without it the session is stored as plain text.
+// stored in the database. Required in production; in development, without it the session is
+// stored as plain text.
 export const TELEGRAM_SESSION_KEY = process.env.TELEGRAM_SESSION_KEY || "";
 
 // Channels and keywords are managed in the web UI. These env vars are only used once,

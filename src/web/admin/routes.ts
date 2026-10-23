@@ -54,6 +54,7 @@ import {
   enableTotp,
   disableTotp,
   resetTotp,
+  TOTP_LOCKED_TEXT,
   Admin,
 } from "../../services/auth.js";
 import QRCode from "qrcode";
@@ -119,14 +120,20 @@ async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse):
   const result = typeof login === "string" && typeof password === "string"
     ? await checkAdminLogin(login, password, typeof code === "string" && code.trim() ? code : undefined)
     : { error: "invalid" as const };
-  // The password was right: a success, or a request for the code, isn't a failed attempt
-  if (!("error" in result) || result.error === "code_required") {
+  // The password was right: a success, or a request for the code, isn't a failed attempt. Wrong
+  // codes are limited per admin in the database instead, see checkTotpCode.
+  if (!("error" in result) || result.error === "code_required" || result.error === "code_locked") {
     releaseIp();
     releaseLogin();
   }
   if ("error" in result) {
     if (result.error === "code_required") {
       sendJson(res, 401, { error: "Введіть код із застосунку автентифікації", codeRequired: true });
+      return;
+    }
+    if (result.error === "code_locked") {
+      log("WARN", "Admin login refused: too many wrong two-factor codes", { ip, login });
+      sendJson(res, 429, { error: TOTP_LOCKED_TEXT, codeRequired: true });
       return;
     }
     log("WARN", "Failed admin login", { ip, login: typeof login === "string" ? login : undefined });
@@ -412,8 +419,13 @@ async function handleAuthorized(
     }
 
     case "POST /api/admins/password": {
-      const { password } = await readJson(req);
-      const error = await changeAdminPassword(admin.id, String(password ?? ""));
+      const { currentPassword, password, code } = await readJson(req);
+      const error = await changeAdminPassword(
+        admin.id,
+        String(currentPassword ?? ""),
+        String(password ?? ""),
+        typeof code === "string" ? code : undefined
+      );
       if (!error) await audit(actor, "admin.password_changed", { type: "admin", id: admin.id });
       sendResult(res, error);
       return;
@@ -421,7 +433,7 @@ async function handleAuthorized(
 
     // --- Own two-factor sign-in ---
     case "POST /api/admins/totp/setup": {
-      const setup = await startTotpSetup(admin.id);
+      const setup = await startTotpSetup(admin.id, String((await readJson(req)).password ?? ""));
       if (typeof setup === "string") throw new HttpError(400, setup);
       sendJson(res, 200, { secret: setup.secret, qrDataUrl: await QRCode.toDataURL(setup.url) });
       return;

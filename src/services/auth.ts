@@ -4,6 +4,7 @@ import { pool } from "./db.js";
 import { ADMIN_LOGIN, ADMIN_PASSWORD, BOT_TOKEN } from "../config.js";
 import { log } from "../utils/logger.js";
 import { generateTotpSecret, totpUrl, verifyTotp } from "./totp.js";
+import { audit, SYSTEM } from "./audit.js";
 
 // Sessions for both web apps, Telegram sign-in for users and passwords for admins.
 // Only hashes of session and login tokens are stored, so a database leak can't be used to log in.
@@ -150,8 +151,9 @@ function toAdmin(row: any): Admin {
   };
 }
 
-// "code_required": the password is right, and the admin has 2FA on but sent no code
-export type AdminLoginResult = { adminId: string } | { error: "invalid" | "code_required" };
+// "code_required": the password is right, and the admin has 2FA on but sent no code.
+// "code_locked": the password is right, but too many wrong codes were sent, see checkTotpCode.
+export type AdminLoginResult = { adminId: string } | { error: "invalid" | "code_required" | "code_locked" };
 
 // Marks the code's time step used; false when it or a later one already was (a replayed code)
 async function consumeTotpStep(adminId: string, step: number): Promise<boolean> {
@@ -160,6 +162,59 @@ async function consumeTotpStep(adminId: string, step: number): Promise<boolean> 
     [adminId, step]
   );
   return result.rowCount === 1;
+}
+
+// Wrong codes in a row an admin may send freely; after that each next code has to wait, twice as
+// long after every further wrong one (1, 2, 4… minutes, up to a day), so guessing the 6 digits
+// takes years rather than weeks
+const TOTP_FREE_FAILURES = 5;
+const TOTP_MAX_LOCK_MIN = 24 * 60;
+export const TOTP_LOCKED_TEXT = "Забагато невірних кодів. Спробуйте пізніше.";
+
+// Checks a code for an admin with 2FA on. Counted in the database, so restarts don't reset it.
+// The attempt is counted as failed before the code is checked, in one UPDATE: the row lock makes
+// parallel requests wait for each other, so they can't all slip in before the lock starts.
+async function checkTotpCode(adminId: string, secret: string, code: string): Promise<"ok" | "invalid" | "locked"> {
+  const taken = await pool.query<{ totp_failures: number }>(
+    `UPDATE admins SET totp_failures = totp_failures + 1,
+       totp_locked_until = CASE WHEN totp_failures + 1 >= $2
+         THEN NOW() + LEAST(power(2, totp_failures + 1 - $2), $3) * INTERVAL '1 minute' END
+     WHERE id = $1 AND (totp_locked_until IS NULL OR totp_locked_until <= NOW())
+     RETURNING totp_failures`,
+    [adminId, TOTP_FREE_FAILURES, TOTP_MAX_LOCK_MIN]
+  );
+  if (taken.rows.length === 0) return "locked";
+
+  const step = verifyTotp(secret, code);
+  if (step !== null && (await consumeTotpStep(adminId, step))) {
+    await pool.query("UPDATE admins SET totp_failures = 0, totp_locked_until = NULL WHERE id = $1", [adminId]);
+    return "ok";
+  }
+  const failures = taken.rows[0].totp_failures;
+  log("WARN", "Wrong two-factor code", { adminId, failures });
+  if (failures === TOTP_FREE_FAILURES) {
+    await audit(SYSTEM, "admin.totp_locked", { type: "admin", id: adminId }, { failures });
+  }
+  return "invalid";
+}
+
+// Confirms that whoever holds an admin session also knows the password, and the current code when
+// 2FA is on, so a stolen session alone can't take the account over. Shares the brute-force limit
+// with the login form, per admin.
+async function reauthenticate(adminId: string, password: string, code: string | undefined): Promise<string | null> {
+  const release = takeLoginAttempt(`admin-reauth:${adminId}`);
+  if (!release) return "Забагато спроб. Спробуйте пізніше.";
+  const result = await pool.query("SELECT password_hash, totp_secret, totp_enabled_at FROM admins WHERE id = $1", [adminId]);
+  const row = result.rows[0];
+  if (!row || !(await verifyPassword(password, row.password_hash))) return "Невірний поточний пароль";
+  release();
+  if (row.totp_enabled_at) {
+    if (!code?.trim()) return "Введіть код із застосунку автентифікації";
+    const check = await checkTotpCode(adminId, row.totp_secret, code);
+    if (check === "locked") return TOTP_LOCKED_TEXT;
+    if (check === "invalid") return "Невірний код";
+  }
+  return null;
 }
 
 // A disabled admin gets the same answer as a wrong password
@@ -176,8 +231,8 @@ export async function checkAdminLogin(login: string, password: string, code: str
   if (!(await verifyPassword(password, admin.password_hash)) || admin.disabled_at) return { error: "invalid" };
   if (admin.totp_enabled_at) {
     if (!code) return { error: "code_required" };
-    const step = verifyTotp(admin.totp_secret, code);
-    if (step === null || !(await consumeTotpStep(admin.id, step))) return { error: "invalid" };
+    const check = await checkTotpCode(admin.id, admin.totp_secret, code);
+    if (check !== "ok") return { error: check === "locked" ? "code_locked" : "invalid" };
   }
   await pool.query("UPDATE admins SET last_login_at = NOW() WHERE id = $1", [admin.id]);
   return { adminId: admin.id };
@@ -207,8 +262,16 @@ export async function createAdmin(login: string, password: string): Promise<stri
   }
 }
 
-export async function changeAdminPassword(adminId: string, password: string): Promise<string | null> {
+// Needs the current password (and code, with 2FA on), see reauthenticate
+export async function changeAdminPassword(
+  adminId: string,
+  currentPassword: string,
+  password: string,
+  code: string | undefined
+): Promise<string | null> {
   if (password.length < MIN_PASSWORD_LENGTH) return `Пароль має містити щонайменше ${MIN_PASSWORD_LENGTH} символів`;
+  const reauthError = await reauthenticate(adminId, currentPassword, code);
+  if (reauthError) return reauthError;
   await pool.query("UPDATE admins SET password_hash = $2 WHERE id = $1", [adminId, await hashPassword(password)]);
   await destroyAllSessions("admin", adminId);
   return null;
@@ -237,11 +300,14 @@ export async function setAdminDisabled(actorId: string, adminId: string, disable
 
 const TOTP_ISSUER = "Оренда — адмінка";
 
-// Starts over each time, so a half-finished setup can simply be redone
-export async function startTotpSetup(adminId: string): Promise<{ secret: string; url: string } | string> {
+// Starts over each time, so a half-finished setup can simply be redone. Needs the password, so a
+// stolen session can't tie the account to the thief's phone and lock its owner out.
+export async function startTotpSetup(adminId: string, password: string): Promise<{ secret: string; url: string } | string> {
   const admin = await getAdmin(adminId);
   if (!admin) return "Адміністратора не знайдено";
   if (admin.totpEnabled) return "Двофакторний вхід уже увімкнено";
+  const reauthError = await reauthenticate(adminId, password, undefined);
+  if (reauthError) return reauthError;
   const secret = generateTotpSecret();
   await pool.query("UPDATE admins SET totp_secret = $2, totp_last_step = NULL WHERE id = $1", [adminId, secret]);
   return { secret, url: totpUrl(secret, admin.login, TOTP_ISSUER) };
@@ -263,8 +329,9 @@ export async function disableTotp(adminId: string, code: string): Promise<string
   const result = await pool.query("SELECT totp_secret, totp_enabled_at FROM admins WHERE id = $1", [adminId]);
   const row = result.rows[0];
   if (!row?.totp_enabled_at) return "Двофакторний вхід не увімкнено";
-  const step = verifyTotp(row.totp_secret, code);
-  if (step === null || !(await consumeTotpStep(adminId, step))) return "Невірний код";
+  const check = await checkTotpCode(adminId, row.totp_secret, code);
+  if (check === "locked") return TOTP_LOCKED_TEXT;
+  if (check === "invalid") return "Невірний код";
   await pool.query("UPDATE admins SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1", [adminId]);
   return null;
 }
@@ -273,11 +340,15 @@ export async function disableTotp(adminId: string, code: string): Promise<string
 export async function resetTotp(actorId: string, adminId: string): Promise<string | null> {
   if (adminId === actorId) return "Свій двофакторний вхід вимикайте кодом із застосунку";
   const result = await pool.query(
-    "UPDATE admins SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1",
+    `UPDATE admins SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL,
+       totp_failures = 0, totp_locked_until = NULL WHERE id = $1`,
     [adminId]
   );
   return result.rowCount === 0 ? "Адміністратора не знайдено" : null;
 }
+
+// Placeholders from .env.example and docs, which someone may deploy unchanged
+const WEAK_BOOTSTRAP_PASSWORDS = new Set(["change_me", "changeme", "change_me_please", "password", "admin", "your_password_here"]);
 
 // The first admin comes from ADMIN_LOGIN / ADMIN_PASSWORD and is the owner; the env vars are
 // ignored once one exists
@@ -286,6 +357,11 @@ export async function bootstrapAdmin(): Promise<void> {
   if (existing.rows.length > 0) return;
   if (!ADMIN_PASSWORD) {
     log("WARN", "No admins yet and ADMIN_PASSWORD is empty: the admin app can't be used");
+    return;
+  }
+  // This admin is an owner, so a guessable password would hand over the whole app
+  if (ADMIN_PASSWORD.length < MIN_PASSWORD_LENGTH || WEAK_BOOTSTRAP_PASSWORDS.has(ADMIN_PASSWORD.toLowerCase())) {
+    log("ERROR", `ADMIN_PASSWORD is too weak (placeholder or under ${MIN_PASSWORD_LENGTH} characters): no admin created, set a strong one and restart`);
     return;
   }
   await pool.query("INSERT INTO admins (login, password_hash, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING", [

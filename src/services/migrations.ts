@@ -318,6 +318,17 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    id: 5,
+    name: "admin_totp_failure_limit",
+    up: async (db) => {
+      await db.query(`
+        -- Wrong two-factor codes in a row, and until when the next code is refused (auth.ts)
+        ALTER TABLE admins ADD COLUMN totp_failures INT NOT NULL DEFAULT 0;
+        ALTER TABLE admins ADD COLUMN totp_locked_until TIMESTAMPTZ;
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(): Promise<void> {

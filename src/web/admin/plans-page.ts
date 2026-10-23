@@ -51,7 +51,9 @@ ${PAGE_HEAD}
       <h2>Мій пароль</h2>
       <p class="hint">Після зміни всі ваші сесії завершаться, і потрібно буде увійти знову.</p>
       <form class="row" id="password">
+        <input name="currentPassword" type="password" autocomplete="current-password" placeholder="Поточний пароль" aria-label="Поточний пароль" required>
         <input name="password" type="password" autocomplete="new-password" placeholder="Новий пароль" aria-label="Новий пароль" required>
+        <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Код 2FA" aria-label="Код 2FA" hidden>
         <button type="submit">Змінити</button>
       </form>
       <p class="error" data-error="password"></p>
@@ -109,13 +111,17 @@ ${BASE_SCRIPT}
         '<button type="submit">Підтвердити</button></form>';
     } else {
       el.innerHTML = '<p><span class="badge warn">вимкнено</span> Увімкніть, щоб для входу, крім пароля, був потрібен код із телефона.</p>' +
-        '<button type="button" id="totp-setup">Налаштувати</button>';
+        '<form class="row" id="totp-setup"><input name="password" type="password" autocomplete="current-password" placeholder="Поточний пароль" aria-label="Поточний пароль" required>' +
+        '<button type="submit">Налаштувати</button></form>';
     }
   }
 
   async function loadAdmins() {
     const { me, admins } = await api("GET", "/api/admins");
     document.getElementById("add-admin-block").hidden = me.role !== "owner";
+    const passwordCode = document.getElementById("password").elements.code;
+    passwordCode.hidden = !me.totpEnabled;
+    passwordCode.required = me.totpEnabled;
     document.getElementById("admins").innerHTML = admins.map((a) =>
       '<tr><td>' + esc(a.login) + (a.disabled ? ' <span class="badge bad">вимкнено</span>' : '') + '</td>' +
       '<td>' + ADMIN_ROLES[a.role] + '</td>' +
@@ -141,7 +147,6 @@ ${BASE_SCRIPT}
     if (b.dataset.adminRole) adminAction("admins", () => api("POST", "/api/admins/role", { adminId: b.dataset.adminRole, role: b.dataset.role }));
     if (b.dataset.adminDisabled) adminAction("admins", () => api("POST", "/api/admins/disabled", { adminId: b.dataset.adminDisabled, disabled: b.dataset.disabled === "true" }));
     if (b.dataset.totpReset) adminAction("admins", () => api("POST", "/api/admins/totp/reset", { adminId: b.dataset.totpReset }));
-    if (b.id === "totp-setup") adminAction("totp", async () => { totpSetup = await api("POST", "/api/admins/totp/setup", {}); });
   });
 
   document.addEventListener("click", async (e) => {
@@ -175,8 +180,15 @@ ${BASE_SCRIPT}
         form.reset();
         await loadAdmins();
       } else if (form.id === "password") {
-        await api("POST", "/api/admins/password", { password: form.elements.password.value });
+        await api("POST", "/api/admins/password", {
+          currentPassword: form.elements.currentPassword.value,
+          password: form.elements.password.value,
+          code: form.elements.code.value,
+        });
         location.href = "/login";
+      } else if (form.id === "totp-setup") {
+        totpSetup = await api("POST", "/api/admins/totp/setup", { password: form.elements.password.value });
+        await loadAdmins();
       } else if (form.id === "totp-enable" || form.id === "totp-disable") {
         await api("POST", "/api/admins/totp/" + (form.id === "totp-enable" ? "enable" : "disable"), { code: form.elements.code.value });
         totpSetup = null;

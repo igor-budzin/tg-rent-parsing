@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { pool } from "./db.js";
-import { TELEGRAM_SESSION_KEY } from "../config.js";
+import { IS_PRODUCTION, TELEGRAM_SESSION_KEY } from "../config.js";
 import { log } from "../utils/logger.js";
 
 // The session string gives full access to the reader's Telegram account, so it's stored
@@ -12,9 +12,13 @@ const PREFIX = "enc:v1:";
 const AAD = Buffer.from("telegram_session");
 const key = TELEGRAM_SESSION_KEY ? Buffer.from(TELEGRAM_SESSION_KEY, "base64") : null;
 
-// Checked on start, so a malformed key fails loudly instead of at the first save
+// Checked on start, so a malformed key fails loudly instead of at the first save. In production
+// the key is required: a plain-text session in a leaked backup would give away the account.
 export function sessionKeyError(): string | null {
   if (key && key.length !== 32) return "TELEGRAM_SESSION_KEY must be 32 bytes, base64-encoded (openssl rand -base64 32)";
+  if (!key && IS_PRODUCTION) {
+    return "TELEGRAM_SESSION_KEY must be set in production (openssl rand -base64 32); without it the Telegram session is stored unencrypted";
+  }
   return null;
 }
 
@@ -41,7 +45,11 @@ export async function loadSession(): Promise<string> {
     "SELECT session FROM telegram_session WHERE id = 1"
   );
   const stored = result.rows[0]?.session ?? "";
-  if (!stored.startsWith(PREFIX)) return stored;
+  if (!stored.startsWith(PREFIX)) {
+    // Saved before the key was set; it's saved encrypted once the client connects with it
+    if (stored && key) log("WARN", "Saved Telegram session is unencrypted; it will be re-saved encrypted");
+    return stored;
+  }
   if (!key) {
     log("ERROR", "Saved Telegram session is encrypted but TELEGRAM_SESSION_KEY is not set; log in again or set the key");
     return "";
