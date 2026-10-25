@@ -38,14 +38,16 @@ interface TelegramUpdate {
 }
 
 // Reply-keyboard buttons; pressing one sends its label as a plain text message.
-// They turn this person's notifications on and off; the account stays as it is.
+// They turn this person's notifications on and off; the account stays as it is. The web app
+// button works like /login.
 const START_BUTTON = "▶️ Підписатися";
 const STOP_BUTTON = "⏹ Зупинити";
+const WEB_BUTTON = "🌐 Веб-кабінет";
 
 const ROLE_NAMES: Record<Role, string> = { owner: "власник", editor: "редактор", viewer: "глядач" };
 
 function keyboardWith(button: string) {
-  return { keyboard: [[{ text: button }]], resize_keyboard: true, is_persistent: true };
+  return { keyboard: [[{ text: button }, { text: WEB_BUTTON }]], resize_keyboard: true, is_persistent: true };
 }
 
 async function reply(chatId: number, html: string, button?: string): Promise<void> {
@@ -244,7 +246,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
       `Сповіщення вимкнено. Натисніть «${START_BUTTON}», щоб увімкнути знову. Акаунт і фільтри збережено.`,
       START_BUTTON
     );
-  } else if (command === "/login") {
+  } else if (command === "/login" || text === WEB_BUTTON) {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
     if (await refuseIfBlocked(user, chatId)) return;
     await ensureAccount(user);
