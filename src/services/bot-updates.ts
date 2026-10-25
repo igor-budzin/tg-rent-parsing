@@ -257,8 +257,17 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   }
 }
 
+// Earlier versions set a Mini App menu button; Telegram keeps it until told otherwise. The web app
+// opens in the browser from the login button instead.
+async function resetMenuButton(): Promise<void> {
+  await callBotApi("setChatMenuButton", { menu_button: { type: "default" } }).catch((error) =>
+    log("WARN", "Could not reset the bot menu button", { error: String(error) })
+  );
+}
+
 export async function startBotUpdatesPolling(): Promise<void> {
   let offset = 0;
+  await resetMenuButton();
 
   while (true) {
     try {
