@@ -6,6 +6,7 @@ import {
   resolveSession,
   destroySession,
   verifyTelegramLogin,
+  verifyWebAppInitData,
   consumeLoginToken,
   peekLoginToken,
   takeLoginAttempt,
@@ -224,6 +225,28 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
         lastName: data.lastName,
       });
       if (user.status === "blocked") throw new HttpError(403, "Ваш доступ заблоковано. Зверніться до підтримки.");
+      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": await startSession(req, user) });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // The login page opened as a Mini App from the bot POSTs Telegram's signed initData here.
+    // Signs in afresh on every open, replacing any earlier session in this webview, so the app
+    // always belongs to whoever opened it.
+    case "POST /auth/webapp": {
+      const { initData } = await readJson(req);
+      const data = typeof initData === "string" ? verifyWebAppInitData(initData) : null;
+      if (!data) throw new HttpError(400, "Не вдалося підтвердити вхід через Telegram. Спробуйте ще раз.");
+      // Opened from the bot's private chat, so the user's id is also that chat's id
+      const user = await upsertTelegramUser({
+        telegramUserId: data.id,
+        chatId: data.id,
+        username: data.username,
+        firstName: data.firstName,
+        lastName: data.lastName,
+      });
+      if (user.status === "blocked") throw new HttpError(403, "Ваш доступ заблоковано. Зверніться до підтримки.");
+      await destroySession(getCookie(req, sessionCookieName(req, COOKIE)));
       res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": await startSession(req, user) });
       res.end(JSON.stringify({ ok: true }));
       return;

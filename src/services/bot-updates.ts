@@ -44,6 +44,12 @@ const STOP_BUTTON = "⏹ Зупинити";
 
 const ROLE_NAMES: Record<Role, string> = { owner: "власник", editor: "редактор", viewer: "глядач" };
 
+// The web app opened inside Telegram as a Mini App; the login page signs in with the initData
+// Telegram passes. Telegram only accepts HTTPS URLs, so there are no Mini App buttons in local
+// development.
+const WEB_APP_BUTTON = "Відкрити кабінет";
+const WEB_APP_URL = APP_URL.startsWith("https://") ? `${APP_URL}/login` : null;
+
 function keyboardWith(button: string) {
   return { keyboard: [[{ text: button }]], resize_keyboard: true, is_persistent: true };
 }
@@ -230,7 +236,10 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
     if (await refuseIfBlocked(user, chatId)) return;
     await ensureAccount(user);
-    await reply(chatId, `Вхід у веб-кабінет (одноразове посилання, діє 15 хвилин):\n${await loginLink(user)}`);
+    await sendBotText(chatId, `Вхід у веб-кабінет (одноразове посилання, діє 15 хвилин):\n${await loginLink(user)}`, {
+      disable_web_page_preview: true,
+      ...(WEB_APP_URL ? { reply_markup: { inline_keyboard: [[{ text: WEB_APP_BUTTON, web_app: { url: WEB_APP_URL } }]] } } : {}),
+    });
   } else if (command === "/status") {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
     if (await refuseIfBlocked(user, chatId)) return;
@@ -239,8 +248,17 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   }
 }
 
+// The menu button next to the message field in every private chat with the bot
+async function setWebAppMenuButton(): Promise<void> {
+  if (!WEB_APP_URL) return;
+  await callBotApi("setChatMenuButton", {
+    menu_button: { type: "web_app", text: WEB_APP_BUTTON, web_app: { url: WEB_APP_URL } },
+  }).catch((error) => log("WARN", "Could not set the bot menu button", { error: String(error) }));
+}
+
 export async function startBotUpdatesPolling(): Promise<void> {
   let offset = 0;
+  await setWebAppMenuButton();
 
   while (true) {
     try {

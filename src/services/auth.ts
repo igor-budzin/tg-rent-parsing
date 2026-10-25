@@ -86,6 +86,35 @@ export function verifyTelegramLogin(params: URLSearchParams): TelegramAuthData |
   };
 }
 
+// --- Mini App opened from the bot (https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app) ---
+
+export function verifyWebAppInitData(initData: string): TelegramAuthData | null {
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  const authDate = Number(params.get("auth_date"));
+  if (!hash || !authDate) return null;
+
+  const dataCheckString = [...params.entries()]
+    .filter(([key]) => key !== "hash")
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
+  const expected = createHmac("sha256", secret).update(dataCheckString).digest();
+  const given = Buffer.from(hash, "hex");
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+  if (Date.now() / 1000 - authDate > TELEGRAM_AUTH_MAX_AGE_SEC) return null;
+
+  let user: any;
+  try {
+    user = JSON.parse(params.get("user") ?? "");
+  } catch {
+    return null;
+  }
+  if (!user || !Number.isSafeInteger(user.id)) return null;
+  return { id: String(user.id), username: user.username, firstName: user.first_name, lastName: user.last_name };
+}
+
 // --- One-time login links sent by the bot ---
 
 export async function createLoginToken(userId: string): Promise<string> {
