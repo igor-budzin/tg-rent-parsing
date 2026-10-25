@@ -1,5 +1,6 @@
 import pg from "pg";
 import { pool } from "./db.js";
+import { convert } from "./exchange-rates.js";
 import { log } from "../utils/logger.js";
 
 // Numbered schema changes, applied once each in order and recorded in schema_migrations.
@@ -344,6 +345,35 @@ const MIGRATIONS: Migration[] = [
         -- Known admin IPs, read from sign-in events (auth.ts isKnownAdminIp)
         CREATE INDEX audit_log_admin_login ON audit_log (target_id, created_at) WHERE action = 'admin.login';
       `);
+    },
+  },
+  {
+    id: 7,
+    name: "price_filter_in_uah",
+    up: async (db) => {
+      // Price filters are now always in UAH; limits set in another currency are converted at
+      // today's NBU rate, or cleared when the rate is unavailable
+      const rows = await db.query<{ account_id: string; price_min: string | null; price_max: string | null; price_currency: string }>(
+        "SELECT account_id, price_min, price_max, price_currency FROM account_filters WHERE price_currency <> 'UAH'"
+      );
+      const toUah = async (amount: string | null, currency: string) => {
+        if (amount === null) return null;
+        const converted = await convert(Number(amount), currency, "UAH");
+        return converted === null ? null : Math.round(converted);
+      };
+      for (const row of rows.rows) {
+        const min = await toUah(row.price_min, row.price_currency);
+        const max = await toUah(row.price_max, row.price_currency);
+        if ((row.price_min !== null && min === null) || (row.price_max !== null && max === null)) {
+          log("WARN", "Price filter cleared: no exchange rate", { accountId: row.account_id, currency: row.price_currency });
+        }
+        await db.query("UPDATE account_filters SET price_min = $2, price_max = $3 WHERE account_id = $1", [
+          row.account_id,
+          min,
+          max,
+        ]);
+      }
+      await db.query("ALTER TABLE account_filters DROP COLUMN price_currency");
     },
   },
 ];

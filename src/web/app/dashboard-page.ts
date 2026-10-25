@@ -50,15 +50,10 @@ const SECTIONS: Record<UserPage, { title: string; html: string }> = {
     </section>
     <section class="card">
       <h2>Ціна</h2>
-      <p class="hint">Ціни в інших валютах перераховуються за курсом НБУ. Порожнє поле — без обмеження.</p>
+      <p class="hint">У гривнях. Ціни в доларах і євро перераховуються за курсом НБУ. Порожнє поле — без обмеження.</p>
       <form class="row" data-kind="price">
-        <input name="min" type="number" min="0" step="any" placeholder="від" aria-label="Мінімальна ціна">
-        <input name="max" type="number" min="0" step="any" placeholder="до" aria-label="Максимальна ціна">
-        <select name="currency" aria-label="Валюта">
-          <option value="UAH">₴</option>
-          <option value="USD">$</option>
-          <option value="EUR">€</option>
-        </select>
+        <input name="min" type="number" min="0" step="any" placeholder="від, ₴" aria-label="Мінімальна ціна, грн">
+        <input name="max" type="number" min="0" step="any" placeholder="до, ₴" aria-label="Максимальна ціна, грн">
         <button type="submit">Зберегти</button>
       </form>
       <p class="error" data-error="price"></p>
@@ -263,11 +258,10 @@ ${BASE_SCRIPT}
     const price = f.price;
     priceForm.elements.min.value = price.min ?? "";
     priceForm.elements.max.value = price.max ?? "";
-    priceForm.elements.currency.value = price.currency;
     document.getElementById("price-status").textContent =
-      price.min !== null && price.max !== null ? "Ціна від " + money(price.min, price.currency) + " до " + money(price.max, price.currency) + "."
-      : price.min !== null ? "Ціна від " + money(price.min, price.currency) + "."
-      : price.max !== null ? "Ціна до " + money(price.max, price.currency) + "."
+      price.min !== null && price.max !== null ? "Ціна від " + money(price.min, "₴") + " до " + money(price.max, "₴") + "."
+      : price.min !== null ? "Ціна від " + money(price.min, "₴") + "."
+      : price.max !== null ? "Ціна до " + money(price.max, "₴") + "."
       : "Без обмеження — підходить будь-яка ціна.";
   }
 
@@ -348,7 +342,6 @@ ${BASE_SCRIPT}
     if (kind === "floor" || kind === "price") {
       const toNumber = (input) => input.value.trim() === "" ? null : Number(input.value);
       const value = { min: toNumber(form.elements.min), max: toNumber(form.elements.max) };
-      if (form.elements.currency) value.currency = form.elements.currency.value;
       return change(kind, () => api("PUT", "/api/" + kind, { value }));
     }
     if (kind === "keywords") {

@@ -164,7 +164,7 @@ ${BASE_SCRIPT}
         '<dt>Створено</dt><dd>' + formatDate(a.createdAt, true) + '</dd>' +
         '<dt>Фільтри</dt><dd>' + (f.keywords.length ? f.keywords.map(esc).join(", ") : '<span class="muted">немає ключових слів</span>') +
           '<div class="muted">кімнати: ' + (f.rooms.length ? f.rooms.map((r) => r === 4 ? "4+" : r).join(", ") : "будь-які") +
-          ' · поверх: ' + range(f.floor) + ' · ціна: ' + range(f.price) + ' ' + esc(f.price.currency) + '</div></dd></dl>' +
+          ' · поверх: ' + range(f.floor) + ' · ціна: ' + range(f.price) + ' ₴</div></dd></dl>' +
         '<div class="actions" style="margin-top:12px">' +
           (a.status === "archived" ? '' : '<button class="small ' + (a.status === "active" ? "danger" : "secondary") + '" data-account-status="' +
           (a.status === "active" ? "blocked" : "active") + '">' + (a.status === "active" ? "Заблокувати акаунт" : "Розблокувати акаунт") + '</button>') +

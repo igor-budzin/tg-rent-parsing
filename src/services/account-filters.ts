@@ -19,7 +19,7 @@ export const EMPTY_FILTERS: Filters = {
   keywords: [],
   rooms: [],
   floor: { min: null, max: null },
-  price: { min: null, max: null, currency: "UAH" },
+  price: { min: null, max: null },
 };
 
 export async function createFilters(accountId: string, db: Db = pool): Promise<void> {
@@ -94,6 +94,6 @@ export async function setFloor(accountId: string, value: unknown): Promise<strin
 export async function setPrice(accountId: string, value: unknown): Promise<string | null> {
   const price = normalizePrice(value);
   if (!price) return "Некоректний діапазон цін";
-  await update(accountId, "price_min = $2, price_max = $3, price_currency = $4", [price.min, price.max, price.currency]);
+  await update(accountId, "price_min = $2, price_max = $3", [price.min, price.max]);
   return null;
 }

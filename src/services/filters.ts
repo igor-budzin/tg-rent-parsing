@@ -10,11 +10,10 @@ export interface FloorRange {
   max: number | null;
 }
 
-// Allowed price range in the given currency, inclusive; a null end is unbounded
+// Allowed price range in UAH, inclusive; a null end is unbounded
 export interface PriceRange {
   min: number | null;
   max: number | null;
-  currency: string;
 }
 
 export interface Filters {
@@ -26,18 +25,17 @@ export interface Filters {
 }
 
 const MAX_FLOOR = 200;
-export const CURRENCIES = ["UAH", "USD", "EUR"];
+// Price filters are always in UAH; post prices in other currencies are converted at NBU rates
+const FILTER_CURRENCY = "UAH";
 // Room counts selectable in the web UI; the last one also covers anything bigger ("4+")
 export const MAX_ROOMS = 4;
 
 export function normalizePrice(value: unknown): PriceRange | null {
   if (!value || typeof value !== "object") return null;
-  const { min, max, currency } = value as Record<string, unknown>;
+  const { min, max } = value as Record<string, unknown>;
   const valid = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0);
-  if (!valid(min) || !valid(max) || typeof currency !== "string" || !CURRENCIES.includes(currency)) {
-    return null;
-  }
-  const range = { min: min as number | null, max: max as number | null, currency };
+  if (!valid(min) || !valid(max)) return null;
+  const range = { min: min as number | null, max: max as number | null };
   if (range.min !== null && range.max !== null && range.min > range.max) return null;
   return range;
 }
@@ -65,7 +63,7 @@ export function toFilters(row: any): Filters {
     keywords: row.keywords ?? [],
     rooms: row.rooms ?? [],
     floor: { min: row.floor_min, max: row.floor_max },
-    price: { min: num(row.price_min), max: num(row.price_max), currency: row.price_currency },
+    price: { min: num(row.price_min), max: num(row.price_max) },
   };
 }
 
@@ -109,7 +107,7 @@ function floorMatches({ floor }: Filters, postFloor: number | null): boolean {
 // A post without a price, or whose currency can't be converted, passes
 async function priceMatches({ price }: Filters, postPrice: ParsedPost["price"]): Promise<boolean> {
   if (!postPrice || (price.min === null && price.max === null)) return true;
-  const amount = await convert(postPrice.amount, postPrice.currency, price.currency);
+  const amount = await convert(postPrice.amount, postPrice.currency, FILTER_CURRENCY);
   if (amount === null) return true;
   return (price.min === null || amount >= price.min) && (price.max === null || amount <= price.max);
 }
