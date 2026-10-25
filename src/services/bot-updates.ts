@@ -44,12 +44,6 @@ const STOP_BUTTON = "⏹ Зупинити";
 
 const ROLE_NAMES: Record<Role, string> = { owner: "власник", editor: "редактор", viewer: "глядач" };
 
-// The web app opened inside Telegram as a Mini App; the login page signs in with the initData
-// Telegram passes. Telegram only accepts HTTPS URLs, so there are no Mini App buttons in local
-// development.
-const WEB_APP_BUTTON = "Відкрити кабінет";
-const WEB_APP_URL = APP_URL.startsWith("https://") ? `${APP_URL}/login` : null;
-
 function keyboardWith(button: string) {
   return { keyboard: [[{ text: button }]], resize_keyboard: true, is_persistent: true };
 }
@@ -69,6 +63,24 @@ async function loginLink(user: User): Promise<string> {
   const token = await createLoginToken(user.id);
   return `${APP_URL}/auth/link?token=${token}`;
 }
+
+// Telegram refuses buttons linking to localhost, so local development gets the link as text
+const LINK_BUTTONS_ALLOWED = !/(^|\.)localhost$/.test(new URL(APP_URL).hostname);
+
+// A button with a fresh one-time login link; it opens the web app in the browser
+async function sendLoginButton(chatId: number, user: User, html: string): Promise<void> {
+  const link = await loginLink(user);
+  if (!LINK_BUTTONS_ALLOWED) {
+    await reply(chatId, `${html}\n${link}`);
+    return;
+  }
+  await sendBotText(chatId, html, {
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [[{ text: "🌐 Відкрити веб-кабінет", url: link }]] },
+  });
+}
+
+const LOGIN_BUTTON_HINT = "Кнопка одноразова й діє 15 хвилин; нову надішле команда /login.";
 
 export function paymentHint(): string {
   const lines = [];
@@ -148,12 +160,12 @@ async function handleStart(chatId: number, from: TelegramUser, payload: string):
   const intro = trialStarted
     ? "Вітаємо! Для вас увімкнено пробний період — сповіщення про нові оголошення вже надходитимуть.\n\n"
     : "";
-  await reply(
+  // Two messages: one message can't carry both the reply keyboard and an inline button
+  await reply(chatId, `${intro}${await statusText({ ...user, notificationsEnabled: true })}`, STOP_BUTTON);
+  await sendLoginButton(
     chatId,
-    `${intro}${await statusText({ ...user, notificationsEnabled: true })}\n\n` +
-      `Налаштуйте ключові слова, кімнати, поверх і ціну у веб-кабінеті: ${await loginLink(user)}\n` +
-      `Посилання одноразове й діє 15 хвилин; нове — командою /login.`,
-    STOP_BUTTON
+    user,
+    `Налаштуйте ключові слова, кімнати, поверх і ціну у веб-кабінеті.\n${LOGIN_BUTTON_HINT}`
   );
 }
 
@@ -236,10 +248,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
     if (await refuseIfBlocked(user, chatId)) return;
     await ensureAccount(user);
-    await sendBotText(chatId, `Вхід у веб-кабінет (одноразове посилання, діє 15 хвилин):\n${await loginLink(user)}`, {
-      disable_web_page_preview: true,
-      ...(WEB_APP_URL ? { reply_markup: { inline_keyboard: [[{ text: WEB_APP_BUTTON, web_app: { url: WEB_APP_URL } }]] } } : {}),
-    });
+    await sendLoginButton(chatId, user, `Вхід у веб-кабінет.\n${LOGIN_BUTTON_HINT}`);
   } else if (command === "/status") {
     const user = await upsertTelegramUser(profileOf(message.from, chatId));
     if (await refuseIfBlocked(user, chatId)) return;
@@ -248,17 +257,8 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   }
 }
 
-// The menu button next to the message field in every private chat with the bot
-async function setWebAppMenuButton(): Promise<void> {
-  if (!WEB_APP_URL) return;
-  await callBotApi("setChatMenuButton", {
-    menu_button: { type: "web_app", text: WEB_APP_BUTTON, web_app: { url: WEB_APP_URL } },
-  }).catch((error) => log("WARN", "Could not set the bot menu button", { error: String(error) }));
-}
-
 export async function startBotUpdatesPolling(): Promise<void> {
   let offset = 0;
-  await setWebAppMenuButton();
 
   while (true) {
     try {

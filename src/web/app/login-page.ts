@@ -39,8 +39,7 @@ ${PAGE_HEAD}
 // JSON POST, another site can't make the browser sign in to someone else's account (login CSRF),
 // and the signed data never ends up in a URL. Unlike the embedded Login Widget this needs no
 // third-party cookies. It only works on the domain set for the bot in BotFather (/setdomain);
-// the one-time link from the bot's /login command works everywhere. The bot's Mini App buttons
-// open this page too, with signed initData in #tgWebAppData, which is POSTed to /auth/webapp.
+// the one-time link from the bot's /login command works everywhere.
 export function userLoginPageHtml(botUsername: string | null, botId: string, appUrl: string, error?: string): string {
   const origin = new URL(appUrl).origin;
   const authUrl =
@@ -81,33 +80,21 @@ ${PAGE_HEAD}
     var loginButton = document.getElementById("tg-login");
     if (loginButton) loginButton.addEventListener("click", function () { location.href = loginButton.dataset.authUrl; });
 
-    function signIn(url, body) {
-      return fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    }
-
-    // Opened as a Mini App from the bot: Telegram passes the signed initData in the hash
-    var initData = new URLSearchParams(location.hash.slice(1)).get("tgWebAppData");
-    var request;
-    if (initData) {
-      request = signIn("/auth/webapp", { initData: initData });
-    } else {
-      var m = location.hash.match(/tgAuthResult=([A-Za-z0-9_=+\\/-]+)/);
-      if (!m) return;
-      var user;
-      try {
-        var bin = atob(m[1].replace(/-/g, "+").replace(/_/g, "/"));
-        var bytes = Uint8Array.from(bin, function (c) { return c.charCodeAt(0); });
-        user = JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {}
-      if (!user || !user.hash) return;
-      request = signIn("/auth/telegram", { data: user });
-    }
+    var m = location.hash.match(/tgAuthResult=([A-Za-z0-9_=+\\/-]+)/);
+    if (!m) return;
     history.replaceState(null, "", location.pathname);
-    request
+    var user;
+    try {
+      var bin = atob(m[1].replace(/-/g, "+").replace(/_/g, "/"));
+      var bytes = Uint8Array.from(bin, function (c) { return c.charCodeAt(0); });
+      user = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (e) {}
+    if (!user || !user.hash) return;
+    fetch("/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: user }),
+    })
       .then(function (res) {
         return res.json().catch(function () { return {}; }).then(function (body) {
           if (!res.ok) throw new Error(body.error || res.statusText);
