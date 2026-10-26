@@ -270,13 +270,17 @@ export async function handleAppRequest(req: http.IncomingMessage, res: http.Serv
       return;
   }
 
-  const userId = await resolveSession("user", getCookie(req, sessionCookieName(req, COOKIE)));
-  const user = userId ? await getUser(userId) : null;
+  const cookie = sessionCookieName(req, COOKIE);
+  const token = getCookie(req, cookie);
+  const session = await resolveSession("user", token);
+  const user = session ? await getUser(session.subjectId) : null;
   if (!user || user.status === "blocked") {
     if (req.method === "GET" && USER_PAGE_PATHS[url.pathname]) redirect(res, "/login");
     else sendJson(res, 401, { error: "Потрібно увійти" });
     return;
   }
+  // Kept by whatever response follows, since writeHead merges headers set here
+  if (token && session?.renewedMaxAgeSec) res.setHeader("Set-Cookie", sessionCookie(req, cookie, token, session.renewedMaxAgeSec));
 
   const page = req.method === "GET" ? USER_PAGE_PATHS[url.pathname] : undefined;
   if (page) {

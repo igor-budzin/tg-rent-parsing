@@ -13,7 +13,10 @@ const scryptAsync = promisify(scrypt) as (password: string, salt: Buffer, keylen
 
 export type SessionKind = "user" | "admin";
 
+// A session expires after this long without use; each use pushes the expiry back, see resolveSession
 const SESSION_TTL_DAYS: Record<SessionKind, number> = { user: 30, admin: 1 };
+// ...but never past this long after sign-in, so a stolen cookie that keeps being used still dies
+const SESSION_MAX_AGE_DAYS: Record<SessionKind, number> = { user: 90, admin: 7 };
 const LOGIN_TOKEN_TTL_MIN = 15;
 // Telegram login data older than this is rejected, so leaked login data can't be replayed for long.
 // The page sends it right after Telegram redirects back, so an hour only allows for slow devices
@@ -35,13 +38,29 @@ export async function createSession(kind: SessionKind, subjectId: string): Promi
   return { token, maxAgeSec: days * 86_400 };
 }
 
-export async function resolveSession(kind: SessionKind, token: string | undefined): Promise<string | null> {
+// renewedMaxAgeSec is set when the expiry was pushed back, and the cookie has to be sent again with
+// it. Renewed at most once an hour, so not every request writes to the database.
+export async function resolveSession(
+  kind: SessionKind,
+  token: string | undefined
+): Promise<{ subjectId: string; renewedMaxAgeSec: number | null } | null> {
   if (!token) return null;
+  const renewed = await pool.query<{ subject_id: string; max_age: number }>(
+    `WITH s AS (
+       SELECT token_hash, LEAST(NOW() + $3 * INTERVAL '1 day', created_at + $4 * INTERVAL '1 day') AS new_expires_at
+       FROM sessions WHERE token_hash = $1 AND kind = $2 AND expires_at > NOW()
+     )
+     UPDATE sessions SET expires_at = s.new_expires_at FROM s
+     WHERE sessions.token_hash = s.token_hash AND s.new_expires_at > sessions.expires_at + INTERVAL '1 hour'
+     RETURNING subject_id, EXTRACT(EPOCH FROM s.new_expires_at - NOW())::int AS max_age`,
+    [sha256(token), kind, SESSION_TTL_DAYS[kind], SESSION_MAX_AGE_DAYS[kind]]
+  );
+  if (renewed.rows[0]) return { subjectId: renewed.rows[0].subject_id, renewedMaxAgeSec: renewed.rows[0].max_age };
   const result = await pool.query<{ subject_id: string }>(
     "SELECT subject_id FROM sessions WHERE token_hash = $1 AND kind = $2 AND expires_at > NOW()",
     [sha256(token), kind]
   );
-  return result.rows[0]?.subject_id ?? null;
+  return result.rows[0] ? { subjectId: result.rows[0].subject_id, renewedMaxAgeSec: null } : null;
 }
 
 export async function destroySession(token: string | undefined): Promise<void> {

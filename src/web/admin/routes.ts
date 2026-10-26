@@ -507,14 +507,18 @@ export async function handleAdminRequest(req: http.IncomingMessage, res: http.Se
     return;
   }
 
-  const adminId = await resolveSession("admin", getCookie(req, sessionCookieName(req, COOKIE)));
+  const cookie = sessionCookieName(req, COOKIE);
+  const token = getCookie(req, cookie);
+  const session = await resolveSession("admin", token);
   // Re-read on every request, so disabling an admin or changing their role applies at once
-  const admin = adminId ? await getAdmin(adminId) : null;
+  const admin = session ? await getAdmin(session.subjectId) : null;
   if (!admin || admin.disabled) {
     if (req.method === "GET" && PAGES[path]) redirect(res, "/login");
     else sendJson(res, 401, { error: "Потрібно увійти" });
     return;
   }
+  // Kept by whatever response follows, since writeHead merges headers set here
+  if (token && session?.renewedMaxAgeSec) res.setHeader("Set-Cookie", sessionCookie(req, cookie, token, session.renewedMaxAgeSec));
 
   if (req.method === "GET" && PAGES[path]) {
     sendHtml(res, PAGES[path]);
